@@ -13,11 +13,15 @@ struct Renderer_VX : Rml::RenderInterface {
         void (&EndCommands)(Renderer_VX*);
     };
 
-    bool Init(const Backend& backend);
+    Renderer_VX();
+    ~Renderer_VX();
+
+    bool Init(const Backend& backend, uint32_t frameCount);
     void Shutdown();
 
-    void BeginFrame(vx::CommandBuffer commandBuffer);
+    void BeginFrame(vx::CommandBuffer commandBuffer, uint32_t frame);
     void EndFrame();
+    void ResetFrame(uint32_t frame);
 
     /// Called by RmlUi when it wants to compile geometry it believes will be
     /// static for the forseeable future.
@@ -54,6 +58,7 @@ struct Renderer_VX : Rml::RenderInterface {
 
 private:
     struct MyDescriptorSet;
+    struct FrameResources;
     enum { ColorPipeline, TexturePipeline, PipelineCount };
 
     void InitPipelines();
@@ -62,11 +67,13 @@ private:
                                      Rml::Vector2i dimensions);
 
     const Backend* m_Backend = nullptr;
+    std::unique_ptr<FrameResources[]> m_FrameResources;
     vx::DescriptorSetLayout<MyDescriptorSet> m_DescriptorSetLayout;
     vk::PipelineLayout m_PipelineLayouts[PipelineCount];
     vk::Pipeline m_Pipelines[PipelineCount];
     vk::Sampler m_Sampler;
     vx::CommandBuffer m_CommandBuffer;
+    uint32_t m_FrameNumber = 0;
     bool m_EnableScissor = false;
     bool m_HasTransform = false;
 };

@@ -102,7 +102,9 @@ struct BackendContext {
     GLFWwindow* m_Window = nullptr;
 
     vx::Instance m_Instance;
+#ifndef NDEBUG
     vk::DebugUtilsMessengerEXT m_DebugMessenger;
+#endif
     vk::SurfaceKHR m_Surface;
     vx::PhysicalDevice m_PhysicalDevice;
     vx::Device m_Device;
@@ -178,7 +180,7 @@ struct BackendContext {
 
         m_System.Get()->SetWindow(m_Window);
 
-        if (!m_Renderer.Init(g_BackendImpl)) {
+        if (!m_Renderer.Init(g_BackendImpl, InFlightCount)) {
             Rml::Log::Message(Rml::Log::LT_ERROR,
                               "Failed to initialize Vulkan render interface");
             return false;
@@ -218,6 +220,9 @@ struct BackendContext {
         if (m_Device) {
             (void)m_Device.waitIdle();
         }
+        for (uint32_t i = 0; i != InFlightCount; ++i) {
+            m_Renderer.ResetFrame(i);
+        }
         m_Renderer.Shutdown();
         DestroySwapchainTargets();
         DestroyDepthStencilImage();
@@ -253,9 +258,11 @@ struct BackendContext {
         if (m_Surface) {
             m_Instance.destroySurfaceKHR(m_Surface);
         }
+#ifndef NDEBUG
         if (m_DebugMessenger) {
             m_Instance.destroyDebugUtilsMessengerEXT(m_DebugMessenger);
         }
+#endif
         if (m_Instance) {
             m_Instance.destroy();
         }
@@ -273,6 +280,7 @@ struct BackendContext {
         const vx::CommandBuffer commandBuffer{m_CommandBuffers[m_FrameNumber]};
         check(m_Device.waitForFences(1, &syncObject.m_RenderFence, true,
                                      UINT64_MAX));
+        m_Renderer.ResetFrame(m_FrameNumber);
         if (auto ret = m_Device.acquireNextImageKHR(
                 m_Swapchain, UINT64_MAX, syncObject.m_AcquireSemaphore);
             ret.result == vk::Result::eErrorOutOfDateKHR) {
@@ -306,7 +314,7 @@ struct BackendContext {
         viewport.setMinDepth(0.f);
         viewport.setMaxDepth(1.f);
         commandBuffer.cmdSetViewport(0, 1, &viewport);
-        m_Renderer.BeginFrame(commandBuffer);
+        m_Renderer.BeginFrame(commandBuffer, m_FrameNumber);
     }
 
     void EndFrame() {
@@ -502,26 +510,29 @@ struct BackendContext {
     }
 
     void InitInstance() {
-        vk::ApplicationInfo appInfo{/*applicationVersion*/ 0,
-                                    /*engineVersion*/ 0,
-                                    /*apiVersion*/ VK_API_VERSION_1_3};
+        vk::ApplicationInfo appInfo;
+        appInfo.setApiVersion(VK_API_VERSION_1_3);
 
         vk::InstanceCreateInfo instInfo;
         instInfo.setApplicationInfo(&appInfo);
 
-        const char* const layers[] = {"VK_LAYER_KHRONOS_validation"};
-        instInfo.setEnabledLayerCount(uint32_t(std::size(layers)));
-        instInfo.setEnabledLayerNames(layers);
+        std::initializer_list<const char*> layers{
+#ifndef NDEBUG
+            "VK_LAYER_KHRONOS_validation"
+#endif
+        };
+        instInfo.setEnabledLayerCount(uint32_t(layers.size()));
+        instInfo.setEnabledLayerNames(layers.begin());
+
         std::vector<const char*> extensions;
         {
             uint32_t count = 0;
             const auto list = glfwGetRequiredInstanceExtensions(&count);
             extensions.assign(list, list + count);
-            extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
         }
-        instInfo.setEnabledExtensionCount(uint32_t(extensions.size()));
-        instInfo.setEnabledExtensionNames(extensions.data());
 
+#ifndef NDEBUG
+        extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
         using Severity = vk::DebugUtilsMessageSeverityFlagBitsEXT;
         using Message = vk::DebugUtilsMessageTypeFlagBitsEXT;
         vk::DebugUtilsMessengerCreateInfoEXT debugInfo;
@@ -538,11 +549,18 @@ struct BackendContext {
                                   pCallbackData->pMessage);
                 return false;
             });
+        instInfo.chain(debugInfo);
+#endif
 
-        m_Instance = vk::createInstance(instInfo.chain(debugInfo)).get();
+        instInfo.setEnabledExtensionCount(uint32_t(extensions.size()));
+        instInfo.setEnabledExtensionNames(extensions.data());
+
+        m_Instance = vk::createInstance(instInfo).get();
         volkLoadInstance(m_Instance.handle);
+#ifndef NDEBUG
         m_DebugMessenger =
             m_Instance.createDebugUtilsMessengerEXT(debugInfo).get();
+#endif
     }
 
     bool DiscoverPhysicalDevice(vx::PhysicalDevice physicalDevice,

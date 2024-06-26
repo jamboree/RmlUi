@@ -3,6 +3,7 @@
 #include <RmlUi/Core/FileInterface.h>
 #include <RmlUi/Core/Log.h>
 #include "RmlUi_VX/ShadersCompiledSPV.h"
+#include <boost/unordered/unordered_flat_set.hpp>
 
 #define FIELD(s, m) offsetof(s, m), sizeof(s::m)
 
@@ -11,6 +12,28 @@ struct Renderer_VX::MyDescriptorSet {
         vk::ShaderStageFlagBits::bFragment;
 
     VX_BINDING(0, vx::CombinedImageSamplerDescriptor, Stages) tex;
+};
+
+struct ResourceBase {
+    uint32_t m_RefCount = 1;
+};
+
+struct GeometryResource : ResourceBase {
+    uint32_t m_VertexCount;
+    uint32_t m_IndexCount;
+    vk::Buffer m_Buffer;
+    vma::Allocation m_Allocation;
+};
+
+struct TextureResource : ResourceBase {
+    vk::Image m_Image;
+    vk::ImageView m_ImageView;
+    vma::Allocation m_Allocation;
+};
+
+struct Renderer_VX::FrameResources {
+    boost::unordered_flat_set<Rml::CompiledGeometryHandle> m_Geometries;
+    boost::unordered_flat_set<Rml::TextureHandle> m_Textures;
 };
 
 struct StagingBuffer {
@@ -52,8 +75,12 @@ struct VsInput {
     Rml::Vector2f translate;
 };
 
-bool Renderer_VX::Init(const Backend& backend) {
+Renderer_VX::Renderer_VX() = default;
+Renderer_VX::~Renderer_VX() = default;
+
+bool Renderer_VX::Init(const Backend& backend, uint32_t frameCount) {
     m_Backend = &backend;
+    m_FrameResources.reset(new FrameResources[frameCount]);
 
     const auto device = m_Backend->GetDevice(this);
     check(device.createTypedDescriptorSetLayout(
@@ -111,8 +138,9 @@ Rml::Matrix4f GetMvp(vk::Extent2D extent, const Rml::Matrix4f& transform) {
     return projection * transform;
 }
 
-void Renderer_VX::BeginFrame(vx::CommandBuffer commandBuffer) {
+void Renderer_VX::BeginFrame(vx::CommandBuffer commandBuffer, uint32_t frame) {
     m_CommandBuffer = commandBuffer;
+    m_FrameNumber = frame;
 
     const auto extent = m_Backend->GetFrameExtent(this);
     const vk::Rect2D renderArea{{}, extent};
@@ -127,12 +155,17 @@ void Renderer_VX::BeginFrame(vx::CommandBuffer commandBuffer) {
 
 void Renderer_VX::EndFrame() { m_CommandBuffer = {}; }
 
-struct GeometryResource {
-    uint32_t m_VertexCount;
-    uint32_t m_IndexCount;
-    vk::Buffer m_Buffer;
-    vma::Allocation m_Allocation;
-};
+void Renderer_VX::ResetFrame(uint32_t frame) {
+    auto& frameResources = m_FrameResources[frame];
+    for (const auto g : frameResources.m_Geometries) {
+        ReleaseGeometry(g);
+    }
+    frameResources.m_Geometries.clear();
+    for (const auto t : frameResources.m_Textures) {
+        ReleaseTexture(t);
+    }
+    frameResources.m_Textures.clear();
+}
 
 Rml::CompiledGeometryHandle
 Renderer_VX::CompileGeometry(Rml::Span<const Rml::Vertex> vertices,
@@ -171,20 +204,21 @@ Renderer_VX::CompileGeometry(Rml::Span<const Rml::Vertex> vertices,
     return reinterpret_cast<Rml::CompiledGeometryHandle>(g.release());
 }
 
-struct TextureResource {
-    vk::Image m_Image;
-    vk::ImageView m_ImageView;
-    vma::Allocation m_Allocation;
-};
-
 void Renderer_VX::RenderGeometry(Rml::CompiledGeometryHandle handle,
                                  Rml::Vector2f translation,
                                  Rml::TextureHandle texture) {
+    auto& frameResources = m_FrameResources[m_FrameNumber];
     const auto g = reinterpret_cast<GeometryResource*>(handle);
+    if (frameResources.m_Geometries.insert(handle).second) {
+        ++g->m_RefCount;
+    }
     auto pipeline = ColorPipeline;
     if (texture) {
         pipeline = TexturePipeline;
         const auto t = reinterpret_cast<TextureResource*>(texture);
+        if (frameResources.m_Textures.insert(texture).second) {
+            ++t->m_RefCount;
+        }
         const vx::DescriptorSet<MyDescriptorSet> descriptorSet;
         m_CommandBuffer.cmdPushTypedDescriptorSetKHR(
             vk::PipelineBindPoint::eGraphics, m_PipelineLayouts[pipeline], 0,
@@ -206,9 +240,11 @@ void Renderer_VX::RenderGeometry(Rml::CompiledGeometryHandle handle,
 }
 
 void Renderer_VX::ReleaseGeometry(Rml::CompiledGeometryHandle geometry) {
-    const auto allocator = m_Backend->GetAllocator(this);
-
     const auto g = reinterpret_cast<GeometryResource*>(geometry);
+    if (--g->m_RefCount) {
+        return;
+    }
+    const auto allocator = m_Backend->GetAllocator(this);
     allocator.destroyBuffer(g->m_Buffer, g->m_Allocation);
     delete g;
 }
@@ -318,10 +354,12 @@ Renderer_VX::GenerateTexture(Rml::Span<const Rml::byte> source_data,
 }
 
 void Renderer_VX::ReleaseTexture(Rml::TextureHandle texture_handle) {
+    const auto t = reinterpret_cast<TextureResource*>(texture_handle);
+    if (--t->m_RefCount) {
+        return;
+    }
     const auto device = m_Backend->GetDevice(this);
     const auto allocator = m_Backend->GetAllocator(this);
-
-    const auto t = reinterpret_cast<TextureResource*>(texture_handle);
     device.destroyImageView(t->m_ImageView);
     allocator.destroyImage(t->m_Image, t->m_Allocation);
     delete t;
