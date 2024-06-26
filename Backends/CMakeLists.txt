@@ -32,7 +32,7 @@ target_sources(rmlui_backend_Win32_VK INTERFACE
 	"${CMAKE_CURRENT_LIST_DIR}/RmlUi_Include_Vulkan.h"
 	"${CMAKE_CURRENT_LIST_DIR}/RmlUi_Vulkan/ShadersCompiledSPV.h"
 )
-target_link_libraries(rmlui_backend_Win32_VK INTERFACE rmlui_backend_common_headers)
+target_link_libraries(rmlui_backend_Win32_VK INTERFACE rmlui_backend_common_headers volk::volk GPUOpen::VulkanMemoryAllocator)
 
 add_library(rmlui_backend_X11_GL2 INTERFACE)
 target_sources(rmlui_backend_X11_GL2 INTERFACE
@@ -87,7 +87,7 @@ target_sources(rmlui_backend_SDL_VK INTERFACE
 	"${CMAKE_CURRENT_LIST_DIR}/RmlUi_Include_Vulkan.h"
 	"${CMAKE_CURRENT_LIST_DIR}/RmlUi_Vulkan/ShadersCompiledSPV.h"
 )
-target_link_libraries(rmlui_backend_SDL_VK INTERFACE rmlui_backend_common_headers SDL2::SDL2)
+target_link_libraries(rmlui_backend_SDL_VK INTERFACE rmlui_backend_common_headers volk::volk GPUOpen::VulkanMemoryAllocator SDL2::SDL2)
 if(UNIX)
 	# The Vulkan renderer implementation uses dlopen/dlclose
 	# This is required in some UNIX and UNIX-like operating systems to load shared object files at runtime
@@ -152,12 +152,29 @@ target_sources(rmlui_backend_GLFW_VK INTERFACE
 	"${CMAKE_CURRENT_LIST_DIR}/RmlUi_Include_Vulkan.h"
 	"${CMAKE_CURRENT_LIST_DIR}/RmlUi_Vulkan/ShadersCompiledSPV.h"
 )
-target_link_libraries(rmlui_backend_GLFW_VK INTERFACE rmlui_backend_common_headers glfw)
+target_link_libraries(rmlui_backend_GLFW_VK INTERFACE rmlui_backend_common_headers volk::volk GPUOpen::VulkanMemoryAllocator glfw)
 if(UNIX)
 	# The Vulkan renderer implementation uses dlopen/dlclose
 	# This is required in some UNIX and UNIX-like operating systems to load shared object files at runtime
 	target_link_libraries(rmlui_backend_GLFW_VK INTERFACE ${CMAKE_DL_LIBS})
 endif()
+
+add_library(rmlui_backend_GLFW_VX INTERFACE)
+target_sources(rmlui_backend_GLFW_VX INTERFACE
+	"${CMAKE_CURRENT_LIST_DIR}/RmlUi_Platform_GLFW.cpp"
+	"${CMAKE_CURRENT_LIST_DIR}/RmlUi_Renderer_VX.cpp"
+	"${CMAKE_CURRENT_LIST_DIR}/RmlUi_Backend_GLFW_VX.cpp"
+	"${CMAKE_CURRENT_LIST_DIR}/RmlUi_Platform_GLFW.h"
+	"${CMAKE_CURRENT_LIST_DIR}/RmlUi_Renderer_VX.h"
+	"${CMAKE_CURRENT_LIST_DIR}/vk_mem_alloc.cpp"
+)
+target_link_libraries(rmlui_backend_GLFW_VX INTERFACE rmlui_backend_common_headers volk::volk GPUOpen::VulkanMemoryAllocator glfw)
+target_compile_features(rmlui_backend_GLFW_VX INTERFACE cxx_std_20)
+target_include_directories(rmlui_backend_GLFW_VX
+    INTERFACE
+        "D:/lib/boost_1_85_0"
+        "D:/lib/vx"
+)
 
 add_library(rmlui_backend_BackwardCompatible_GLFW_GL2 INTERFACE)
 target_sources(rmlui_backend_BackwardCompatible_GLFW_GL2 INTERFACE

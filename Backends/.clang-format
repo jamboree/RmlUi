@@ -1,0 +1,12 @@
+BasedOnStyle: LLVM
+IndentWidth: 4
+IndentExternBlock: Indent
+AccessModifierOffset: -4
+AlwaysBreakTemplateDeclarations: Yes
+AllowShortCaseLabelsOnASingleLine: true
+AllowShortBlocksOnASingleLine: Empty
+SortIncludes: false
+SpaceAfterTemplateKeyword: false
+NamespaceIndentation: All
+CompactNamespaces: true
+PointerAlignment: Left

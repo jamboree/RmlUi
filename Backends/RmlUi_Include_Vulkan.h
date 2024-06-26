@@ -21,9 +21,9 @@
 	#pragma GCC system_header
 #endif
 
-#include "RmlUi_Vulkan/vulkan.h"
+#include <volk.h>
 // Always include "vulkan.h" first, this comment prevents clang-format from reordering the includes.
-#include "RmlUi_Vulkan/vk_mem_alloc.h"
+#include <vma/vk_mem_alloc.h>
 
 #if defined _MSC_VER
 	#pragma warning(pop)

@@ -16,6 +16,7 @@ set(RMLUI_BACKEND_OPTIONS
 	"GLFW_GL2"
 	"GLFW_GL3"
 	"GLFW_VK"
+	"GLFW_VX"
 	"BackwardCompatible_GLFW_GL2"
 	"BackwardCompatible_GLFW_GL3"
 )
