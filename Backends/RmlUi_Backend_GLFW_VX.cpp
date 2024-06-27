@@ -19,7 +19,9 @@ struct DeviceFeatures : vk::PhysicalDeviceFeatures2 {
             .chain(m_DynamicRendering);
     }
 
-    bool Init(const DeviceFeatures& supported) {
+    bool Init(vk::PhysicalDevice physicalDevice) {
+        DeviceFeatures supported;
+        physicalDevice.getFeatures2(&supported);
         if (!supported.m_Synchronization2.getSynchronization2())
             return false;
         m_Synchronization2.setSynchronization2(true);
@@ -37,7 +39,6 @@ struct PhysicalDeviceInfo {
     vk::PhysicalDeviceProperties m_Properties;
     vx::List<vk::QueueFamilyProperties> m_QueueFamilyProperties;
     vx::List<vk::ExtensionProperties> m_ExtensionProperties;
-    DeviceFeatures m_Features;
 
     bool Init(vx::PhysicalDevice physicalDevice) {
         physicalDevice.getProperties(&m_Properties);
@@ -70,7 +71,7 @@ struct SyncObject {
     vk::Fence m_RenderFence;
 };
 
-struct SwapchainTarget {
+struct FrameResource {
     vk::ImageView m_ImageView;
     vk::Framebuffer m_Framebuffer;
 };
@@ -93,9 +94,9 @@ struct ManualLifetime {
 };
 
 struct BackendContext {
+    static constexpr uint32_t VulkanApiVersion = VK_API_VERSION_1_3;
     static constexpr uint32_t InFlightCount = 2;
-
-    const char* const m_RequiredDeviceExtensions[3] = {
+    static constexpr const char* const RequiredDeviceExtensions[] = {
         VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME,
         VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME};
 
@@ -116,7 +117,7 @@ struct BackendContext {
     SyncObject m_SyncObjects[InFlightCount];
     vk::Fence m_ImmediateFence;
     vk::SwapchainKHR m_Swapchain;
-    vx::List<SwapchainTarget> m_SwapchainTargets;
+    vx::List<FrameResource> m_FrameResources;
     ImageResource m_DepthStencilImage;
 
     ManualLifetime<SystemInterface_GLFW> m_System;
@@ -137,9 +138,6 @@ struct BackendContext {
 
     bool Initialize(const char* window_name, int width, int height,
                     bool allow_resize) {
-        if (!glfwInit()) {
-            return false;
-        }
         m_System.Create();
         m_SystemCreated = true;
         glfwSetErrorCallback([](int error, const char* description) {
@@ -156,35 +154,31 @@ struct BackendContext {
                               "GLFW failed to create window");
             return false;
         }
-        if (volkInitialize()) {
-            Rml::Log::Message(Rml::Log::LT_ERROR,
-                              "Failed to initialize Vulkan");
-            return false;
-        }
 
         InitInstance();
         check(vk::Result(glfwCreateWindowSurface(m_Instance.handle, m_Window,
                                                  nullptr, &m_Surface.handle)));
         PhysicalDeviceInfo deviceInfo;
-        m_PhysicalDevice = SelectPhysicalDevice(deviceInfo);
+        DeviceFeatures features;
+        m_PhysicalDevice = SelectPhysicalDevice(deviceInfo, features);
         if (!m_PhysicalDevice) {
             Rml::Log::Message(Rml::Log::LT_ERROR, "no capable device");
             return false;
         }
-        InitDevice(deviceInfo);
+        InitDevice(deviceInfo, features);
         InitRenderPass();
         InitSyncObjects();
         BuildSwapchain();
         BuildDepthStencilImage();
-        BuildSwapchainTargets();
+        BuildFrameResources();
 
-        m_System.Get()->SetWindow(m_Window);
-
-        if (!m_Renderer.Init(g_BackendImpl, InFlightCount)) {
+        if (!m_Renderer.Init(g_BackendImpl, m_RenderPass, InFlightCount)) {
             Rml::Log::Message(Rml::Log::LT_ERROR,
                               "Failed to initialize Vulkan render interface");
             return false;
         }
+
+        m_System.Get()->SetWindow(m_Window);
 
         // Receive num lock and caps lock modifiers for proper handling of
         // numpad inputs in text fields.
@@ -195,13 +189,13 @@ struct BackendContext {
         return true;
     }
 
-    void DestroySwapchainTargets() {
-        for (auto& swapchainTarget : m_SwapchainTargets) {
-            if (swapchainTarget.m_Framebuffer) {
-                m_Device.destroyFramebuffer(swapchainTarget.m_Framebuffer);
+    void DestroyFrameResources() {
+        for (auto& frameResource : m_FrameResources) {
+            if (frameResource.m_Framebuffer) {
+                m_Device.destroyFramebuffer(frameResource.m_Framebuffer);
             }
-            if (swapchainTarget.m_ImageView) {
-                m_Device.destroyImageView(swapchainTarget.m_ImageView);
+            if (frameResource.m_ImageView) {
+                m_Device.destroyImageView(frameResource.m_ImageView);
             }
         }
     }
@@ -224,7 +218,7 @@ struct BackendContext {
             m_Renderer.ResetFrame(i);
         }
         m_Renderer.Shutdown();
-        DestroySwapchainTargets();
+        DestroyFrameResources();
         DestroyDepthStencilImage();
         if (m_Swapchain) {
             m_Device.destroySwapchainKHR(m_Swapchain);
@@ -272,7 +266,6 @@ struct BackendContext {
         if (m_SystemCreated) {
             m_System.Destroy();
         }
-        glfwTerminate();
     }
 
     void BeginFrame() {
@@ -298,7 +291,7 @@ struct BackendContext {
         vk::RenderPassBeginInfo renderPassBeginInfo;
         renderPassBeginInfo.setRenderPass(m_RenderPass);
         renderPassBeginInfo.setFramebuffer(
-            m_SwapchainTargets[m_ImageIndex].m_Framebuffer);
+            m_FrameResources[m_ImageIndex].m_Framebuffer);
         renderPassBeginInfo.setRenderArea({{0, 0}, m_FrameExtent});
         const vk::ClearValue clearValues[2] = {
             {.color = vk::ClearColorValue()},
@@ -368,14 +361,14 @@ struct BackendContext {
     void RecreateSwapchain() {
         m_FrameNumber = 0;
         (void)m_Device.waitIdle();
-        DestroySwapchainTargets();
+        DestroyFrameResources();
         DestroyDepthStencilImage();
-        m_SwapchainTargets.count = 0;
+        m_FrameResources.count = 0;
         const auto oldSwapchain = m_Swapchain;
         BuildSwapchain();
         m_Device.destroySwapchainKHR(oldSwapchain);
         BuildDepthStencilImage();
-        BuildSwapchainTargets();
+        BuildFrameResources();
     }
 
     bool ProcessEvents(Rml::Context* context, KeyDownCallback key_down_callback,
@@ -511,7 +504,7 @@ struct BackendContext {
 
     void InitInstance() {
         vk::ApplicationInfo appInfo;
-        appInfo.setApiVersion(VK_API_VERSION_1_3);
+        appInfo.setApiVersion(VulkanApiVersion);
 
         vk::InstanceCreateInfo instInfo;
         instInfo.setApplicationInfo(&appInfo);
@@ -563,12 +556,15 @@ struct BackendContext {
 #endif
     }
 
-    bool DiscoverPhysicalDevice(vx::PhysicalDevice physicalDevice,
-                                PhysicalDeviceInfo& deviceInfo) const {
+    bool QueryPhysicalDevice(vx::PhysicalDevice physicalDevice,
+                             PhysicalDeviceInfo& deviceInfo) const {
         if (!deviceInfo.Init(physicalDevice)) {
             return false;
         }
-        for (const auto extension : m_RequiredDeviceExtensions) {
+        if (deviceInfo.m_Properties.getApiVersion() < VulkanApiVersion) {
+            return false;
+        }
+        for (const auto extension : RequiredDeviceExtensions) {
             if (!deviceInfo.HasExtension(extension)) {
                 return false;
             }
@@ -590,24 +586,25 @@ struct BackendContext {
         if (!hasSurfaceSupport || !hasGraphics) {
             return false;
         }
-        DeviceFeatures supportedFeatures;
-        physicalDevice.getFeatures2(&supportedFeatures);
-        return deviceInfo.m_Features.Init(supportedFeatures);
+        return true;
     }
 
-    vk::PhysicalDevice SelectPhysicalDevice(PhysicalDeviceInfo& deviceInfo) {
+    vk::PhysicalDevice SelectPhysicalDevice(PhysicalDeviceInfo& deviceInfo,
+                                            DeviceFeatures& features) {
         vk::PhysicalDevice firstDevice;
         PhysicalDeviceInfo firstDeviceInfo;
         for (const auto physicalDevice :
              m_Instance.enumeratePhysicalDevices().get()) {
-            if (DiscoverPhysicalDevice(physicalDevice, deviceInfo)) {
-                if (deviceInfo.m_Properties.getDeviceType() ==
-                    vk::PhysicalDeviceType::eDiscreteGpu) {
-                    return physicalDevice;
-                }
-                if (!firstDevice) {
-                    firstDevice = physicalDevice;
-                    firstDeviceInfo = std::move(deviceInfo);
+            if (QueryPhysicalDevice(physicalDevice, deviceInfo)) {
+                if (features.Init(physicalDevice)) {
+                    if (deviceInfo.m_Properties.getDeviceType() ==
+                        vk::PhysicalDeviceType::eDiscreteGpu) {
+                        return physicalDevice;
+                    }
+                    if (!firstDevice) {
+                        firstDevice = physicalDevice;
+                        firstDeviceInfo = std::move(deviceInfo);
+                    }
                 }
             }
         }
@@ -617,7 +614,8 @@ struct BackendContext {
         return firstDevice;
     }
 
-    void InitDevice(PhysicalDeviceInfo& physicalDeviceInfo) {
+    void InitDevice(PhysicalDeviceInfo& physicalDeviceInfo,
+                    vk::PhysicalDeviceFeatures2& features) {
         m_QueueFamilyIndex = FindQueueFamilyIndex(
             physicalDeviceInfo.m_QueueFamilyProperties,
             vk::QueueFlagBits::bGraphics | vk::QueueFlagBits::bTransfer,
@@ -628,17 +626,15 @@ struct BackendContext {
         queueInfo.setQueueCount(1);
         queueInfo.setQueuePriorities(queuePriorities);
 
-        const std::span extensions(m_RequiredDeviceExtensions);
+        const std::span extensions(RequiredDeviceExtensions);
         vk::DeviceCreateInfo deviceInfo;
         deviceInfo.setQueueCreateInfoCount(1);
         deviceInfo.setQueueCreateInfos(&queueInfo);
         deviceInfo.setEnabledExtensionCount(uint32_t(extensions.size()));
         deviceInfo.setEnabledExtensionNames(extensions.data());
 
-        m_Device = m_PhysicalDevice
-                       .createDevice(
-                           deviceInfo.chainHead(physicalDeviceInfo.m_Features))
-                       .get();
+        m_Device =
+            m_PhysicalDevice.createDevice(deviceInfo.chainHead(features)).get();
         m_Queue = m_Device.getQueue(m_QueueFamilyIndex, 0);
 
         vma::AllocatorCreateInfo allocatorInfo;
@@ -648,7 +644,7 @@ struct BackendContext {
         allocatorInfo.setFlags(
             vma::AllocatorCreateFlagBits::bBufferDeviceAddress |
             vma::AllocatorCreateFlagBits::bMemoryBudgetEXT);
-        allocatorInfo.setVulkanApiVersion(VK_API_VERSION_1_3);
+        allocatorInfo.setVulkanApiVersion(VulkanApiVersion);
 
         m_Allocator = vma::createAllocator(allocatorInfo).get();
 
@@ -701,12 +697,14 @@ struct BackendContext {
         colorAttachmentCount.setAspectMask(vk::ImageAspectFlagBits::bColor);
         subpass.setColorAttachments(&colorAttachmentCount);
 
-        vk::AttachmentReference2 stencilAttachmentCount;
-        stencilAttachmentCount.setAttachment(1);
-        stencilAttachmentCount.setLayout(
+        vk::AttachmentReference2 depthStencilAttachmentCount;
+        depthStencilAttachmentCount.setAttachment(1);
+        depthStencilAttachmentCount.setLayout(
             vk::ImageLayout::eDepthStencilAttachmentOptimal);
-        stencilAttachmentCount.setAspectMask(vk::ImageAspectFlagBits::bStencil);
-        subpass.setDepthStencilAttachment(&stencilAttachmentCount);
+        depthStencilAttachmentCount.setAspectMask(
+            vk::ImageAspectFlagBits::bDepth |
+            vk::ImageAspectFlagBits::bStencil);
+        subpass.setDepthStencilAttachment(&depthStencilAttachmentCount);
 
         vk::SubpassDependency2 subpassDependency;
         subpassDependency.setSrcSubpass(VK_SUBPASS_EXTERNAL);
@@ -788,11 +786,11 @@ struct BackendContext {
             m_Device.createImageView(imageViewInfo).get();
     }
 
-    void BuildSwapchainTargets() {
+    void BuildFrameResources() {
         const auto swapchainImages =
             m_Device.getSwapchainImagesKHR(m_Swapchain).get();
-        m_SwapchainTargets.count = swapchainImages.count;
-        m_SwapchainTargets.prepare();
+        m_FrameResources.count = swapchainImages.count;
+        m_FrameResources.prepare();
 
         vk::FramebufferCreateInfo framebufferInfo;
         framebufferInfo.setRenderPass(m_RenderPass);
@@ -809,11 +807,11 @@ struct BackendContext {
             const auto imageViewInfo = vx::imageView2DCreateInfo(
                 swapchainImages[i], m_SwapchainImageFormat,
                 vk::ImageAspectFlagBits::bColor);
-            auto& swapchainTarget = m_SwapchainTargets[i];
-            swapchainTarget.m_ImageView =
+            auto& frameResource = m_FrameResources[i];
+            frameResource.m_ImageView =
                 m_Device.createImageView(imageViewInfo).get();
-            attachments[0] = swapchainTarget.m_ImageView;
-            swapchainTarget.m_Framebuffer =
+            attachments[0] = frameResource.m_ImageView;
+            frameResource.m_Framebuffer =
                 m_Device.createFramebuffer(framebufferInfo).get();
         }
     }
@@ -859,7 +857,7 @@ struct BackendContext {
         return index;
     }
 
-    vx::CommandBuffer BeginImmediateCommands() {
+    vx::CommandBuffer BeginTransfer() {
         const auto commandBuffer = m_CommandBuffers[InFlightCount];
         vk::CommandBufferBeginInfo beginInfo;
         beginInfo.setFlags(vk::CommandBufferUsageFlagBits::bOneTimeSubmit);
@@ -867,7 +865,7 @@ struct BackendContext {
         return commandBuffer;
     }
 
-    void EndImmediateCommands() {
+    void EndTransfer() {
         const auto commandBuffer = m_CommandBuffers[InFlightCount];
         check(commandBuffer.end());
 
@@ -896,40 +894,47 @@ struct BackendContext {
         return GetBackendPtr(p)->m_Allocator;
     }
 
-    static vk::RenderPass GetRenderPassImpl(Renderer_VX* p) {
-        return GetBackendPtr(p)->m_RenderPass;
-    }
-
     static vk::Extent2D GetFrameExtentImpl(Renderer_VX* p) {
         return GetBackendPtr(p)->m_FrameExtent;
     }
 
-    static vx::CommandBuffer BeginCommandsImpl(Renderer_VX* p) {
-        return GetBackendPtr(p)->BeginImmediateCommands();
+    static vx::CommandBuffer BeginTransferImpl(Renderer_VX* p) {
+        return GetBackendPtr(p)->BeginTransfer();
     }
 
-    static void EndCommandsImpl(Renderer_VX* p) {
-        GetBackendPtr(p)->EndImmediateCommands();
+    static void EndTransferImpl(Renderer_VX* p) {
+        GetBackendPtr(p)->EndTransfer();
     }
 
     static constexpr Renderer_VX::Backend g_BackendImpl{
         .GetDevice = GetDeviceImpl,
         .GetAllocator = GetAllocatorImpl,
-        .GetRenderPass = GetRenderPassImpl,
         .GetFrameExtent = GetFrameExtentImpl,
-        .BeginCommands = BeginCommandsImpl,
-        .EndCommands = EndCommandsImpl};
+        .BeginTransfer = BeginTransferImpl,
+        .EndTransfer = EndTransferImpl};
 };
 
 static BackendContext g_BackendContext;
 
 bool Backend::Initialize(const char* window_name, int width, int height,
                          bool allow_resize) {
+    if (!glfwInit()) {
+        Rml::Log::Message(Rml::Log::LT_ERROR, "Failed to initialize GLFW");
+        return false;
+    }
+    if (volkInitialize()) {
+        Rml::Log::Message(Rml::Log::LT_ERROR, "Failed to initialize Vulkan");
+        return false;
+    }
     return g_BackendContext.Initialize(window_name, width, height,
                                        allow_resize);
 }
 
-void Backend::Shutdown() { g_BackendContext.Shutdown(); }
+void Backend::Shutdown() {
+    g_BackendContext.Shutdown();
+    volkFinalize();
+    glfwTerminate();
+}
 
 Rml::SystemInterface* Backend::GetSystemInterface() {
     return g_BackendContext.m_System.Get();

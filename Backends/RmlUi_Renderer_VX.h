@@ -7,16 +7,16 @@ struct Renderer_VX : Rml::RenderInterface {
     struct Backend {
         vx::Device (&GetDevice)(Renderer_VX*);
         vma::Allocator (&GetAllocator)(Renderer_VX*);
-        vk::RenderPass (&GetRenderPass)(Renderer_VX*);
         vk::Extent2D (&GetFrameExtent)(Renderer_VX*);
-        vx::CommandBuffer (&BeginCommands)(Renderer_VX*);
-        void (&EndCommands)(Renderer_VX*);
+        vx::CommandBuffer (&BeginTransfer)(Renderer_VX*);
+        void (&EndTransfer)(Renderer_VX*);
     };
 
     Renderer_VX();
     ~Renderer_VX();
 
-    bool Init(const Backend& backend, uint32_t frameCount);
+    bool Init(const Backend& backend, vk::RenderPass renderPass,
+              uint32_t frameCount);
     void Shutdown();
 
     void BeginFrame(vx::CommandBuffer commandBuffer, uint32_t frame);
@@ -61,7 +61,7 @@ private:
     struct FrameResources;
     enum { ColorPipeline, TexturePipeline, PipelineCount };
 
-    void InitPipelines();
+    void InitPipelines(vk::RenderPass renderPass);
 
     Rml::TextureHandle CreateTexture(vk::Buffer buffer,
                                      Rml::Vector2i dimensions);

@@ -5,37 +5,6 @@
 #include "RmlUi_VX/ShadersCompiledSPV.h"
 #include <boost/unordered/unordered_flat_set.hpp>
 
-#define FIELD(s, m) offsetof(s, m), sizeof(s::m)
-
-struct Renderer_VX::MyDescriptorSet {
-    static constexpr vk::ShaderStageFlags Stages =
-        vk::ShaderStageFlagBits::bFragment;
-
-    VX_BINDING(0, vx::CombinedImageSamplerDescriptor, Stages) tex;
-};
-
-struct ResourceBase {
-    uint32_t m_RefCount = 1;
-};
-
-struct GeometryResource : ResourceBase {
-    uint32_t m_VertexCount;
-    uint32_t m_IndexCount;
-    vk::Buffer m_Buffer;
-    vma::Allocation m_Allocation;
-};
-
-struct TextureResource : ResourceBase {
-    vk::Image m_Image;
-    vk::ImageView m_ImageView;
-    vma::Allocation m_Allocation;
-};
-
-struct Renderer_VX::FrameResources {
-    boost::unordered_flat_set<Rml::CompiledGeometryHandle> m_Geometries;
-    boost::unordered_flat_set<Rml::TextureHandle> m_Textures;
-};
-
 struct StagingBuffer {
     vma::Allocator m_Allocator;
     // Rresult
@@ -70,15 +39,47 @@ struct StagingBuffer {
     }
 };
 
+struct ResourceBase {
+    uint32_t m_RefCount = 1;
+};
+
+struct GeometryResource : ResourceBase {
+    uint32_t m_VertexCount;
+    uint32_t m_IndexCount;
+    vk::Buffer m_Buffer;
+    vma::Allocation m_Allocation;
+};
+
+struct TextureResource : ResourceBase {
+    vk::Image m_Image;
+    vk::ImageView m_ImageView;
+    vma::Allocation m_Allocation;
+};
+
 struct VsInput {
     Rml::Matrix4f transform;
     Rml::Vector2f translate;
 };
 
+#define FIELD(s, m) offsetof(s, m), sizeof(s::m)
+
+struct Renderer_VX::MyDescriptorSet {
+    static constexpr vk::ShaderStageFlags Stages =
+        vk::ShaderStageFlagBits::bFragment;
+
+    VX_BINDING(0, vx::CombinedImageSamplerDescriptor, Stages) tex;
+};
+
+struct Renderer_VX::FrameResources {
+    boost::unordered_flat_set<Rml::CompiledGeometryHandle> m_Geometries;
+    boost::unordered_flat_set<Rml::TextureHandle> m_Textures;
+};
+
 Renderer_VX::Renderer_VX() = default;
 Renderer_VX::~Renderer_VX() = default;
 
-bool Renderer_VX::Init(const Backend& backend, uint32_t frameCount) {
+bool Renderer_VX::Init(const Backend& backend, vk::RenderPass renderPass,
+                       uint32_t frameCount) {
     m_Backend = &backend;
     m_FrameResources.reset(new FrameResources[frameCount]);
 
@@ -87,7 +88,7 @@ bool Renderer_VX::Init(const Backend& backend, uint32_t frameCount) {
         &m_DescriptorSetLayout,
         vk::DescriptorSetLayoutCreateFlagBits::bPushDescriptorKHR));
 
-    InitPipelines();
+    InitPipelines(renderPass);
 
     vk::SamplerCreateInfo samplerInfo;
     samplerInfo.setMagFilter(vk::Filter::eLinear);
@@ -121,7 +122,7 @@ void Renderer_VX::Shutdown() {
     }
 }
 
-Rml::Matrix4f GetMvp(vk::Extent2D extent, const Rml::Matrix4f& transform) {
+Rml::Matrix4f Project(vk::Extent2D extent, const Rml::Matrix4f& transform) {
     auto projection = Rml::Matrix4f::ProjectOrtho(
         0.0f, float(extent.getWidth()), float(extent.getHeight()), 0.0f, -10000,
         10000);
@@ -133,9 +134,7 @@ Rml::Matrix4f GetMvp(vk::Extent2D extent, const Rml::Matrix4f& transform) {
                                  Rml::Vector4f(0.0f, 0.0f, 0.5f, 0.0f),
                                  Rml::Vector4f(0.0f, 0.0f, 0.5f, 1.0f));
 
-    projection = correction_matrix * projection;
-
-    return projection * transform;
+    return correction_matrix * projection * transform;
 }
 
 void Renderer_VX::BeginFrame(vx::CommandBuffer commandBuffer, uint32_t frame) {
@@ -147,7 +146,7 @@ void Renderer_VX::BeginFrame(vx::CommandBuffer commandBuffer, uint32_t frame) {
     m_CommandBuffer.cmdSetScissor(0, 1, &renderArea);
 
     const VsInput vsInput{.transform =
-                              GetMvp(extent, Rml::Matrix4f::Identity())};
+                              Project(extent, Rml::Matrix4f::Identity())};
     m_CommandBuffer.cmdPushConstants(m_PipelineLayouts[ColorPipeline],
                                      vk::ShaderStageFlagBits::bVertex, 0,
                                      sizeof(vsInput), &vsInput);
@@ -395,18 +394,14 @@ void Renderer_VX::SetScissorRegion(Rml::Rectanglei region) {
 void Renderer_VX::SetTransform(const Rml::Matrix4f* transform) {
     m_HasTransform = transform != nullptr;
     const auto extent = m_Backend->GetFrameExtent(this);
-    const auto mat =
-        GetMvp(extent, m_HasTransform ? *transform : Rml::Matrix4f::Identity());
+    const auto mat = Project(
+        extent, m_HasTransform ? *transform : Rml::Matrix4f::Identity());
     m_CommandBuffer.cmdPushConstants(m_PipelineLayouts[ColorPipeline],
                                      vk::ShaderStageFlagBits::bVertex,
                                      FIELD(VsInput, transform), &mat);
 }
 
-inline vk::ShaderModuleCreateInfo shaderSource(std::span<const uint32_t> data) {
-    return {data.size_bytes(), data.data()};
-};
-
-void Renderer_VX::InitPipelines() {
+void Renderer_VX::InitPipelines(vk::RenderPass renderPass) {
     const auto device = m_Backend->GetDevice(this);
 
     vk::PushConstantRange pushConstantRange;
@@ -429,7 +424,7 @@ void Renderer_VX::InitPipelines() {
 
     vx::GraphicsPipelineBuilder pipelineBuilder;
     pipelineBuilder.setLayout(m_PipelineLayouts[ColorPipeline]);
-    pipelineBuilder.setRenderPass(m_Backend->GetRenderPass(this));
+    pipelineBuilder.setRenderPass(renderPass);
     pipelineBuilder.setTopology(vk::PrimitiveTopology::eTriangleList);
     pipelineBuilder.setPolygonMode(vk::PolygonMode::eFill);
     pipelineBuilder.setFrontFace(vk::FrontFace::eClockwise);
@@ -474,12 +469,11 @@ void Renderer_VX::InitPipelines() {
                                         vk::DynamicState::eScissor};
     pipelineBuilder.setDynamicStates(dynamicStates);
 
-    const auto vertShader =
-        device.createShaderModule(shaderSource(shader_vert)).get();
+    const auto vertShader = device.createShaderModule(shader_vert).get();
     const auto colorFragShader =
-        device.createShaderModule(shaderSource(shader_frag_color)).get();
+        device.createShaderModule(shader_frag_color).get();
     const auto textureFragShader =
-        device.createShaderModule(shaderSource(shader_frag_texture)).get();
+        device.createShaderModule(shader_frag_texture).get();
 
     vk::PipelineShaderStageCreateInfo shaderStageInfos[2] = {
         vx::makePipelineShaderStageCreateInfo(vk::ShaderStageFlagBits::bVertex,
@@ -503,12 +497,12 @@ void Renderer_VX::InitPipelines() {
 
 Rml::TextureHandle Renderer_VX::CreateTexture(vk::Buffer buffer,
                                               Rml::Vector2i dimensions) {
-    const vk::Extent2D extent(dimensions.x, dimensions.y);
     const auto device = m_Backend->GetDevice(this);
     const auto allocator = m_Backend->GetAllocator(this);
 
     auto t = std::make_unique<TextureResource>();
 
+    const vk::Extent2D extent(dimensions.x, dimensions.y);
     const auto imageInfo =
         vx::image2DCreateInfo(vk::Format::eR8G8B8A8Unorm, extent,
                               vk::ImageUsageFlagBits::bSampled |
@@ -526,7 +520,7 @@ Rml::TextureHandle Renderer_VX::CreateTexture(vk::Buffer buffer,
                                   vk::ImageAspectFlagBits::bColor);
     t->m_ImageView = device.createImageView(imageViewInfo).get();
 
-    const auto commandBuffer = m_Backend->BeginCommands(this);
+    const auto commandBuffer = m_Backend->BeginTransfer(this);
 
     vx::ImageMemoryBarrierState imageMemoryBarrier(
         t->m_Image, vk::ImageAspectFlagBits::bColor);
@@ -549,7 +543,7 @@ Rml::TextureHandle Renderer_VX::CreateTexture(vk::Buffer buffer,
                               vk::AccessFlagBits2::bShaderRead);
     commandBuffer.cmdPipelineBarriers(imageMemoryBarrier);
 
-    m_Backend->EndCommands(this);
+    m_Backend->EndTransfer(this);
 
     return reinterpret_cast<Rml::TextureHandle>(t.release());
 }
