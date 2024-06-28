@@ -48,7 +48,7 @@
 #endif
 
 // your specified api version, but in future it will be dynamic ^_^
-#define RMLUI_VK_API_VERSION VK_API_VERSION_1_3
+#define RMLUI_VK_API_VERSION VK_API_VERSION_1_0
 
 /**
  * Vulkan render interface for RmlUi

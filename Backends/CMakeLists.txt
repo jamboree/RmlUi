@@ -151,6 +151,7 @@ target_sources(rmlui_backend_GLFW_VK INTERFACE
 	"${CMAKE_CURRENT_LIST_DIR}/RmlUi_Renderer_VK.h"
 	"${CMAKE_CURRENT_LIST_DIR}/RmlUi_Include_Vulkan.h"
 	"${CMAKE_CURRENT_LIST_DIR}/RmlUi_Vulkan/ShadersCompiledSPV.h"
+	"${CMAKE_CURRENT_LIST_DIR}/vk_mem_alloc.cpp"
 )
 target_link_libraries(rmlui_backend_GLFW_VK INTERFACE rmlui_backend_common_headers volk::volk GPUOpen::VulkanMemoryAllocator glfw)
 if(UNIX)

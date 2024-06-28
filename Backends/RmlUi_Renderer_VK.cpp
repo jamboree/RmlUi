@@ -728,7 +728,6 @@ void RenderInterface_VK::BeginFrame()
 
 	vkCmdBeginRenderPass(m_p_current_command_buffer, &info_pass, VkSubpassContents::VK_SUBPASS_CONTENTS_INLINE);
 	vkCmdSetViewport(m_p_current_command_buffer, 0, 1, &m_viewport);
-	vkCmdSetScissor(m_p_current_command_buffer, 0, 1, &m_scissor_original);
 
 	m_is_apply_to_regular_geometry_stencil = false;
 }
@@ -746,9 +745,6 @@ void RenderInterface_VK::EndFrame()
 
 	Submit();
 	Present();
-
-	m_semaphore_index_previous = m_semaphore_index;
-	m_semaphore_index = ((m_semaphore_index + 1) % kSwapchainBackBufferCount);
 
 	m_p_current_command_buffer = nullptr;
 }
@@ -884,6 +880,7 @@ void RenderInterface_VK::Initialize_Device() noexcept
 
 	Rml::Vector<const char*> device_extension_names;
 	AddExtensionToDevice(device_extension_names, device_extension_properties, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+	AddExtensionToDevice(device_extension_names, device_extension_properties, VK_EXT_SCALAR_BLOCK_LAYOUT_EXTENSION_NAME);
 
 #ifdef RMLUI_DEBUG
 	AddExtensionToDevice(device_extension_names, device_extension_properties, VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
@@ -2532,7 +2529,7 @@ void RenderInterface_VK::CreateRenderPass() noexcept
 	attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
 	attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
 	attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-	attachments[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+	attachments[1].finalLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 
 	RMLUI_VK_ASSERTMSG(attachments[1].format != VkFormat::VK_FORMAT_UNDEFINED,
 		"can't obtain depth format, your device doesn't support depth/stencil operations");
@@ -2545,7 +2542,7 @@ void RenderInterface_VK::CreateRenderPass() noexcept
 
 	// depth stencil
 	color_references[1].attachment = 1;
-	color_references[1].layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+	color_references[1].layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 
 	VkSubpassDescription subpass = {};
 
@@ -2564,17 +2561,19 @@ void RenderInterface_VK::CreateRenderPass() noexcept
 
 	dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
 	dependencies[0].dstSubpass = 0;
-	dependencies[0].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-	dependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
 	dependencies[0].srcAccessMask = 0;
 	dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+	dependencies[0].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+	dependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+	dependencies[0].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
 
 	dependencies[1].srcSubpass = VK_SUBPASS_EXTERNAL;
 	dependencies[1].dstSubpass = 0;
-	dependencies[1].srcStageMask = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-	dependencies[1].dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-	dependencies[1].srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-	dependencies[1].dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+	dependencies[1].srcStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+	dependencies[1].dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+	dependencies[1].srcAccessMask = 0;
+	dependencies[1].dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+	dependencies[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
 
 	VkRenderPassCreateInfo info = {};
 
@@ -2599,16 +2598,18 @@ void RenderInterface_VK::Wait() noexcept
 
 	constexpr uint64_t kMaxUint64 = std::numeric_limits<uint64_t>::max();
 
-	auto status = VkResult::VK_SUCCESS;
+	auto status =
+		vkAcquireNextImageKHR(m_p_device, m_p_swapchain, kMaxUint64, m_semaphores_image_available[m_semaphore_index], nullptr, &m_image_index);
+	RMLUI_VK_ASSERTMSG(status == VkResult::VK_SUCCESS, "failed to vkAcquireNextImageKHR (see status)");
 
-	status = vkWaitForFences(m_p_device, 1, &m_executed_fences[m_semaphore_index], VK_TRUE, kMaxUint64);
+	m_semaphore_index_previous = m_semaphore_index;
+	m_semaphore_index = ((m_semaphore_index + 1) % kSwapchainBackBufferCount);
+
+	status = vkWaitForFences(m_p_device, 1, &m_executed_fences[m_semaphore_index_previous], VK_TRUE, kMaxUint64);
 	RMLUI_VK_ASSERTMSG(status == VkResult::VK_SUCCESS, "failed to vkWaitForFences (see status)");
 
-	status = vkResetFences(m_p_device, 1, &m_executed_fences[m_semaphore_index]);
+	status = vkResetFences(m_p_device, 1, &m_executed_fences[m_semaphore_index_previous]);
 	RMLUI_VK_ASSERTMSG(status == VkResult::VK_SUCCESS, "failed to vkResetFences (see status)");
-
-	status = vkAcquireNextImageKHR(m_p_device, m_p_swapchain, kMaxUint64, m_semaphores_image_available[m_semaphore_index], nullptr, &m_image_index);
-	RMLUI_VK_ASSERTMSG(status == VkResult::VK_SUCCESS, "failed to vkAcquireNextImageKHR (see status)");
 }
 
 void RenderInterface_VK::Update_PendingForDeletion_Textures_By_Frames() noexcept
@@ -3030,7 +3031,3 @@ void RenderInterface_VK::MemoryPool::Free_GeometryHandle_ShaderDataOnly(geometry
 	vmaVirtualFree(m_p_block, p_valid_geometry_handle->m_p_shader_allocation);
 	p_valid_geometry_handle->m_p_shader_allocation = nullptr;
 }
-
-#define VMA_IMPLEMENTATION
-#define VMA_STATIC_VULKAN_FUNCTIONS 1
-#include "RmlUi_Include_Vulkan.h"
