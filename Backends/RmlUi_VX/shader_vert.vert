@@ -17,7 +17,6 @@ layout(location = 1) out vec4 fragColor;
 void main() {
 	fragTexCoord = inTexCoord;
 	fragColor = inColor;
-	vec2 translatedPos = inPosition + translate.xy;
-	vec4 outPos = transform * vec4(translatedPos, 0, 1);
-    gl_Position = outPos;
+	vec2 translatedPos = inPosition + translate;
+    gl_Position = transform * vec4(translatedPos, 0, 1);
 }

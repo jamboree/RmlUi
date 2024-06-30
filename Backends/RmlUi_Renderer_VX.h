@@ -59,7 +59,7 @@ struct Renderer_VX : Rml::RenderInterface {
 private:
     struct MyDescriptorSet;
     struct FrameResources;
-    enum { ColorPipeline, TexturePipeline, PipelineCount };
+    enum { ClipPipeline, ColorPipeline, TexturePipeline, PipelineCount };
 
     void InitPipelines(vk::RenderPass renderPass);
 
