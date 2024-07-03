@@ -61,11 +61,6 @@ struct VsInput {
     Rml::Vector2f translate;
 };
 
-struct ClipInput {
-    Rml::Matrix4f transform;
-    Rml::Vector2f pts[2];
-};
-
 #define FIELD(s, m) offsetof(s, m), sizeof(s::m)
 
 struct Renderer_VX::MyDescriptorSet {
@@ -147,9 +142,9 @@ void Renderer_VX::BeginFrame(vx::CommandBuffer commandBuffer, uint32_t frame) {
     m_FrameNumber = frame;
 
     const auto extent = m_Backend->GetFrameExtent(this);
-    const vk::Rect2D renderArea{{}, extent};
-    m_CommandBuffer.cmdSetScissor(0, 1, &renderArea);
-    m_CommandBuffer.cmdSetStencilTestEnable(false);
+    m_Scissor.setOffset({});
+    m_Scissor.setExtent(extent);
+    m_CommandBuffer.cmdSetScissor(0, 1, &m_Scissor);
 
     const auto transform = Project(extent, Rml::Matrix4f::Identity());
     m_CommandBuffer.cmdPushConstants(m_PipelineLayouts[ColorPipeline],
@@ -371,57 +366,76 @@ void Renderer_VX::ReleaseTexture(Rml::TextureHandle texture_handle) {
 
 void Renderer_VX::EnableScissorRegion(bool enable) {
     m_EnableScissor = enable;
-    if (!m_CommandBuffer) {
-        return;
-    }
     if (!m_EnableScissor) {
-        const vk::Rect2D scissor{{}, m_Backend->GetFrameExtent(this)};
-        m_CommandBuffer.cmdSetScissor(0, 1, &scissor);
-        m_CommandBuffer.cmdSetStencilTestEnable(false);
+        m_Scissor.setOffset({});
+        m_Scissor.setExtent(m_Backend->GetFrameExtent(this));
+        m_CommandBuffer.cmdSetScissor(0, 1, &m_Scissor);
     }
 }
 
 void Renderer_VX::SetScissorRegion(Rml::Rectanglei region) {
-    if (!m_EnableScissor) {
-        return;
-    }
-    if (m_HasTransform) {
-        const vk::Rect2D scissor{{}, m_Backend->GetFrameExtent(this)};
-        vk::ClearAttachment clearAttachment;
-        clearAttachment.setAspectMask(vk::ImageAspectFlagBits::bStencil);
-        clearAttachment.setClearValue(
-            {.depthStencil = vk::ClearDepthStencilValue{1.0f, 0}});
-        vk::ClearRect clearRect;
-        clearRect.setLayerCount(1);
-        clearRect.setRect(scissor);
-        m_CommandBuffer.cmdSetScissor(0, 1, &scissor);
-        m_CommandBuffer.cmdClearAttachments(1, &clearAttachment, 1, &clearRect);
-        m_CommandBuffer.cmdBindPipeline(vk::PipelineBindPoint::eGraphics,
-                                        m_Pipelines[ClipPipeline]);
-        Rml::Vector2f pts[2] = {
-            Rml::Vector2f(float(region.Left()), float(region.Top())),
-            Rml::Vector2f(float(region.Right()), float(region.Bottom()))};
-        m_CommandBuffer.cmdPushConstants(m_PipelineLayouts[ClipPipeline],
-                                         vk::ShaderStageFlagBits::bVertex,
-                                         FIELD(ClipInput, pts), pts);
-        m_CommandBuffer.cmdDraw(4, 1, 0, 0);
-        m_CommandBuffer.cmdSetStencilTestEnable(true);
-    } else {
-        const vk::Rect2D scissor{vk::Offset2D(region.Left(), region.Top()),
-                                 vk::Extent2D(region.Width(), region.Height())};
-        m_CommandBuffer.cmdSetScissor(0, 1, &scissor);
-        m_CommandBuffer.cmdSetStencilTestEnable(false);
+    if (m_EnableScissor) {
+        m_Scissor.setOffset(vk::Offset2D(region.Left(), region.Top()));
+        m_Scissor.setExtent(vk::Extent2D(region.Width(), region.Height()));
+        m_CommandBuffer.cmdSetScissor(0, 1, &m_Scissor);
     }
 }
 
 void Renderer_VX::SetTransform(const Rml::Matrix4f* transform) {
-    m_HasTransform = transform != nullptr;
     const auto extent = m_Backend->GetFrameExtent(this);
-    const auto mat = Project(
-        extent, m_HasTransform ? *transform : Rml::Matrix4f::Identity());
+    const auto mat =
+        Project(extent, transform ? *transform : Rml::Matrix4f::Identity());
     m_CommandBuffer.cmdPushConstants(m_PipelineLayouts[ColorPipeline],
                                      vk::ShaderStageFlagBits::bVertex,
                                      FIELD(VsInput, transform), &mat);
+}
+
+void Renderer_VX::EnableClipMask(bool enable) {
+    m_CommandBuffer.cmdSetStencilTestEnable(enable);
+}
+
+void Renderer_VX::RenderToClipMask(Rml::ClipMaskOperation operation,
+                                   Rml::CompiledGeometryHandle geometry,
+                                   Rml::Vector2f translation) {
+    auto& frameResources = m_FrameResources[m_FrameNumber];
+    const auto g = reinterpret_cast<GeometryResource*>(geometry);
+    if (frameResources.m_Geometries.insert(geometry).second) {
+        ++g->m_RefCount;
+    }
+    bool clear = false;
+    uint32_t mask = 1;
+    switch (operation) {
+    case Rml::ClipMaskOperation::Set:
+        clear = true;
+        break;
+    case Rml::ClipMaskOperation::SetInverse:
+        clear = true;
+        mask = 0;
+        break;
+    case Rml::ClipMaskOperation::Intersect: break;
+    }
+    if (clear) {
+        vk::ClearAttachment clearAttachment;
+        clearAttachment.setAspectMask(vk::ImageAspectFlagBits::bStencil);
+        clearAttachment.setClearValue(
+            {.depthStencil = vk::ClearDepthStencilValue{1.0f, mask ^ 1}});
+        vk::ClearRect clearRect;
+        clearRect.setLayerCount(1);
+        clearRect.setRect(m_Scissor);
+        m_CommandBuffer.cmdClearAttachments(1, &clearAttachment, 1, &clearRect);
+    }
+
+    m_CommandBuffer.cmdBindPipeline(vk::PipelineBindPoint::eGraphics,
+                                    m_Pipelines[ClipPipeline]);
+    m_CommandBuffer.cmdPushConstants(m_PipelineLayouts[ClipPipeline],
+        vk::ShaderStageFlagBits::bVertex,
+        FIELD(VsInput, translate), &translation);
+    const vk::DeviceSize offset = 0;
+    m_CommandBuffer.cmdBindVertexBuffers(0, 1, &g->m_Buffer, &offset);
+    m_CommandBuffer.cmdBindIndexBuffer(g->m_Buffer,
+        g->m_VertexCount * sizeof(Rml::Vertex),
+        vk::IndexType::eUint32);
+    m_CommandBuffer.cmdDrawIndexed(g->m_IndexCount, 1, 0, 0, 0);
 }
 
 void Renderer_VX::InitPipelines(vk::RenderPass renderPass) {
@@ -430,17 +444,14 @@ void Renderer_VX::InitPipelines(vk::RenderPass renderPass) {
     vk::PushConstantRange pushConstantRange;
     pushConstantRange.setStageFlags(vk::ShaderStageFlagBits::bVertex);
     pushConstantRange.setOffset(0);
+    pushConstantRange.setSize(sizeof(VsInput));
 
     vk::PipelineLayoutCreateInfo pipelineLayoutInfo;
     pipelineLayoutInfo.setPushConstantRangeCount(1);
     pipelineLayoutInfo.setPushConstantRanges(&pushConstantRange);
 
-    pushConstantRange.setSize(sizeof(ClipInput));
-
     m_PipelineLayouts[ClipPipeline] =
         device.createPipelineLayout(pipelineLayoutInfo).get();
-
-    pushConstantRange.setSize(sizeof(VsInput));
 
     m_PipelineLayouts[ColorPipeline] =
         device.createPipelineLayout(pipelineLayoutInfo).get();

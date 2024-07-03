@@ -56,6 +56,15 @@ struct Renderer_VX : Rml::RenderInterface {
     /// new matrix.
     void SetTransform(const Rml::Matrix4f* transform) override;
 
+    /// Called by RmlUi when it wants to enable or disable the clip mask.
+    void EnableClipMask(bool enable) override;
+
+    /// Called by RmlUi when it wants to set or modify the contents of the clip
+    /// mask.
+    void RenderToClipMask(Rml::ClipMaskOperation operation,
+                          Rml::CompiledGeometryHandle geometry,
+                          Rml::Vector2f translation) override;
+
 private:
     struct MyDescriptorSet;
     struct FrameResources;
@@ -73,7 +82,7 @@ private:
     vk::Pipeline m_Pipelines[PipelineCount];
     vk::Sampler m_Sampler;
     vx::CommandBuffer m_CommandBuffer;
+    vk::Rect2D m_Scissor;
     uint32_t m_FrameNumber = 0;
     bool m_EnableScissor = false;
-    bool m_HasTransform = false;
 };
