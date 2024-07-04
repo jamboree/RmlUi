@@ -68,8 +68,8 @@ struct Renderer_VX : Rml::RenderInterface {
 private:
     struct MyDescriptorSet;
     struct FrameResources;
-    enum { ClipPipeline, ColorPipeline, TexturePipeline, PipelineCount };
 
+    void InitPipelineLayouts();
     void InitPipelines(vk::RenderPass renderPass);
 
     Rml::TextureHandle CreateTexture(vk::Buffer buffer,
@@ -78,11 +78,15 @@ private:
     const Backend* m_Backend = nullptr;
     std::unique_ptr<FrameResources[]> m_FrameResources;
     vx::DescriptorSetLayout<MyDescriptorSet> m_DescriptorSetLayout;
-    vk::PipelineLayout m_PipelineLayouts[PipelineCount];
-    vk::Pipeline m_Pipelines[PipelineCount];
+    vk::PipelineLayout m_BasicPipelineLayout;
+    vk::PipelineLayout m_TexturePipelineLayout;
+    vk::Pipeline m_ClipPipeline;
+    vk::Pipeline m_ColorPipeline;
+    vk::Pipeline m_TexturePipeline;
     vk::Sampler m_Sampler;
     vx::CommandBuffer m_CommandBuffer;
     vk::Rect2D m_Scissor;
     uint32_t m_FrameNumber = 0;
+    uint32_t m_StencilRef = 0;
     bool m_EnableScissor = false;
 };

@@ -4,12 +4,11 @@
 
 layout(push_constant) uniform VsInput {
 	mat4 transform;
-	vec2 pt1;
-	vec2 pt2;
+	vec2 translate;
 };
 
+layout(location = 0) in vec2 inPosition;
+
 void main() {
-    float x = (gl_VertexIndex & 1) == 0 ? pt1.x : pt2.x;
-    float y = (gl_VertexIndex & 2) == 0 ? pt1.y : pt2.y;
-    gl_Position = transform * vec4(x, y, 0, 1);
+    gl_Position = transform * vec4(inPosition + translate, 0, 1);
 }

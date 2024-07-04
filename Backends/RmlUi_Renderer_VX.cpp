@@ -7,7 +7,7 @@
 
 struct StagingBuffer {
     vma::Allocator m_Allocator;
-    // Rresult
+    // Result
     vk::Buffer m_Buffer;
     vma::Allocation m_Allocation;
 
@@ -48,6 +48,15 @@ struct GeometryResource : ResourceBase {
     uint32_t m_IndexCount;
     vk::Buffer m_Buffer;
     vma::Allocation m_Allocation;
+
+    void Draw(vx::CommandBuffer commandBuffer) const {
+        const vk::DeviceSize offset = 0;
+        commandBuffer.cmdBindVertexBuffers(0, 1, &m_Buffer, &offset);
+        commandBuffer.cmdBindIndexBuffer(m_Buffer,
+                                         m_VertexCount * sizeof(Rml::Vertex),
+                                         vk::IndexType::eUint32);
+        commandBuffer.cmdDrawIndexed(m_IndexCount, 1, 0, 0, 0);
+    }
 };
 
 struct TextureResource : ResourceBase {
@@ -73,6 +82,22 @@ struct Renderer_VX::MyDescriptorSet {
 struct Renderer_VX::FrameResources {
     boost::unordered_flat_set<Rml::CompiledGeometryHandle> m_Geometries;
     boost::unordered_flat_set<Rml::TextureHandle> m_Textures;
+
+    const GeometryResource* UseGeometry(Rml::CompiledGeometryHandle handle) {
+        const auto p = reinterpret_cast<GeometryResource*>(handle);
+        if (m_Geometries.insert(handle).second) {
+            ++p->m_RefCount;
+        }
+        return p;
+    }
+
+    const TextureResource* UseTexture(Rml::TextureHandle handle) {
+        const auto p = reinterpret_cast<TextureResource*>(handle);
+        if (m_Textures.insert(handle).second) {
+            ++p->m_RefCount;
+        }
+        return p;
+    }
 };
 
 Renderer_VX::Renderer_VX() = default;
@@ -83,12 +108,10 @@ bool Renderer_VX::Init(const Backend& backend, vk::RenderPass renderPass,
     m_Backend = &backend;
     m_FrameResources.reset(new FrameResources[frameCount]);
 
-    const auto device = m_Backend->GetDevice(this);
-    check(device.createTypedDescriptorSetLayout(
-        &m_DescriptorSetLayout,
-        vk::DescriptorSetLayoutCreateFlagBits::bPushDescriptorKHR));
-
+    InitPipelineLayouts();
     InitPipelines(renderPass);
+
+    const auto device = m_Backend->GetDevice(this);
 
     vk::SamplerCreateInfo samplerInfo;
     samplerInfo.setMagFilter(vk::Filter::eLinear);
@@ -107,15 +130,20 @@ void Renderer_VX::Shutdown() {
     if (m_Sampler) {
         device.destroySampler(m_Sampler);
     }
-    for (const auto pipeline : m_Pipelines) {
-        if (pipeline) {
-            device.destroyPipeline(pipeline);
-        }
+    if (m_ClipPipeline) {
+        device.destroyPipeline(m_ClipPipeline);
     }
-    for (const auto pipelineLayout : m_PipelineLayouts) {
-        if (pipelineLayout) {
-            device.destroyPipelineLayout(pipelineLayout);
-        }
+    if (m_ColorPipeline) {
+        device.destroyPipeline(m_ColorPipeline);
+    }
+    if (m_TexturePipeline) {
+        device.destroyPipeline(m_TexturePipeline);
+    }
+    if (m_BasicPipelineLayout) {
+        device.destroyPipelineLayout(m_BasicPipelineLayout);
+    }
+    if (m_TexturePipelineLayout) {
+        device.destroyPipelineLayout(m_TexturePipelineLayout);
     }
     if (m_DescriptorSetLayout) {
         device.destroyDescriptorSetLayout(m_DescriptorSetLayout);
@@ -140,6 +168,8 @@ Rml::Matrix4f Project(vk::Extent2D extent, const Rml::Matrix4f& transform) {
 void Renderer_VX::BeginFrame(vx::CommandBuffer commandBuffer, uint32_t frame) {
     m_CommandBuffer = commandBuffer;
     m_FrameNumber = frame;
+    m_StencilRef = 1;
+    m_EnableScissor = false;
 
     const auto extent = m_Backend->GetFrameExtent(this);
     m_Scissor.setOffset({});
@@ -147,9 +177,11 @@ void Renderer_VX::BeginFrame(vx::CommandBuffer commandBuffer, uint32_t frame) {
     m_CommandBuffer.cmdSetScissor(0, 1, &m_Scissor);
 
     const auto transform = Project(extent, Rml::Matrix4f::Identity());
-    m_CommandBuffer.cmdPushConstants(m_PipelineLayouts[ColorPipeline],
+    m_CommandBuffer.cmdPushConstants(m_BasicPipelineLayout,
                                      vk::ShaderStageFlagBits::bVertex,
                                      FIELD(VsInput, transform), &transform);
+
+    m_CommandBuffer.cmdSetStencilTestEnable(false);
 }
 
 void Renderer_VX::EndFrame() { m_CommandBuffer = {}; }
@@ -207,35 +239,25 @@ void Renderer_VX::RenderGeometry(Rml::CompiledGeometryHandle handle,
                                  Rml::Vector2f translation,
                                  Rml::TextureHandle texture) {
     auto& frameResources = m_FrameResources[m_FrameNumber];
-    const auto g = reinterpret_cast<GeometryResource*>(handle);
-    if (frameResources.m_Geometries.insert(handle).second) {
-        ++g->m_RefCount;
-    }
-    auto pipeline = ColorPipeline;
+    const auto g = frameResources.UseGeometry(handle);
+    auto pipeline = m_ColorPipeline;
+    auto pipelineLayout = m_BasicPipelineLayout;
     if (texture) {
-        pipeline = TexturePipeline;
-        const auto t = reinterpret_cast<TextureResource*>(texture);
-        if (frameResources.m_Textures.insert(texture).second) {
-            ++t->m_RefCount;
-        }
+        pipeline = m_TexturePipeline;
+        pipelineLayout = m_TexturePipelineLayout;
+        const auto t = frameResources.UseTexture(texture);
         const vx::DescriptorSet<MyDescriptorSet> descriptorSet;
         m_CommandBuffer.cmdPushTypedDescriptorSetKHR(
-            vk::PipelineBindPoint::eGraphics, m_PipelineLayouts[pipeline], 0,
+            vk::PipelineBindPoint::eGraphics, pipelineLayout, 0,
             descriptorSet->tex = vx::CombinedImageSamplerDescriptor(
                 m_Sampler, t->m_ImageView,
                 vk::ImageLayout::eShaderReadOnlyOptimal));
     }
-    m_CommandBuffer.cmdBindPipeline(vk::PipelineBindPoint::eGraphics,
-                                    m_Pipelines[pipeline]);
-    m_CommandBuffer.cmdPushConstants(m_PipelineLayouts[pipeline],
+    m_CommandBuffer.cmdBindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
+    m_CommandBuffer.cmdPushConstants(pipelineLayout,
                                      vk::ShaderStageFlagBits::bVertex,
                                      FIELD(VsInput, translate), &translation);
-    const vk::DeviceSize offset = 0;
-    m_CommandBuffer.cmdBindVertexBuffers(0, 1, &g->m_Buffer, &offset);
-    m_CommandBuffer.cmdBindIndexBuffer(g->m_Buffer,
-                                       g->m_VertexCount * sizeof(Rml::Vertex),
-                                       vk::IndexType::eUint32);
-    m_CommandBuffer.cmdDrawIndexed(g->m_IndexCount, 1, 0, 0, 0);
+    g->Draw(m_CommandBuffer);
 }
 
 void Renderer_VX::ReleaseGeometry(Rml::CompiledGeometryHandle geometry) {
@@ -383,11 +405,11 @@ void Renderer_VX::SetScissorRegion(Rml::Rectanglei region) {
 
 void Renderer_VX::SetTransform(const Rml::Matrix4f* transform) {
     const auto extent = m_Backend->GetFrameExtent(this);
-    const auto mat =
+    const auto matrix =
         Project(extent, transform ? *transform : Rml::Matrix4f::Identity());
-    m_CommandBuffer.cmdPushConstants(m_PipelineLayouts[ColorPipeline],
+    m_CommandBuffer.cmdPushConstants(m_BasicPipelineLayout,
                                      vk::ShaderStageFlagBits::bVertex,
-                                     FIELD(VsInput, transform), &mat);
+                                     FIELD(VsInput, transform), &matrix);
 }
 
 void Renderer_VX::EnableClipMask(bool enable) {
@@ -398,27 +420,30 @@ void Renderer_VX::RenderToClipMask(Rml::ClipMaskOperation operation,
                                    Rml::CompiledGeometryHandle geometry,
                                    Rml::Vector2f translation) {
     auto& frameResources = m_FrameResources[m_FrameNumber];
-    const auto g = reinterpret_cast<GeometryResource*>(geometry);
-    if (frameResources.m_Geometries.insert(geometry).second) {
-        ++g->m_RefCount;
-    }
-    bool clear = false;
-    uint32_t mask = 1;
+    const auto g = frameResources.UseGeometry(geometry);
+
+    bool clearStencil = false;
+    auto stencilPassOp = vk::StencilOp::eReplace;
     switch (operation) {
     case Rml::ClipMaskOperation::Set:
-        clear = true;
+        clearStencil = true;
+        m_StencilRef = 1;
         break;
     case Rml::ClipMaskOperation::SetInverse:
-        clear = true;
-        mask = 0;
+        clearStencil = true;
+        m_StencilRef = 0;
         break;
-    case Rml::ClipMaskOperation::Intersect: break;
+    case Rml::ClipMaskOperation::Intersect:
+        stencilPassOp = vk::StencilOp::eIncrementAndClamp;
+        ++m_StencilRef;
+        break;
     }
-    if (clear) {
+
+    if (clearStencil) {
         vk::ClearAttachment clearAttachment;
         clearAttachment.setAspectMask(vk::ImageAspectFlagBits::bStencil);
         clearAttachment.setClearValue(
-            {.depthStencil = vk::ClearDepthStencilValue{1.0f, mask ^ 1}});
+            {.depthStencil = vk::ClearDepthStencilValue{1.0f, 0}});
         vk::ClearRect clearRect;
         clearRect.setLayerCount(1);
         clearRect.setRect(m_Scissor);
@@ -426,20 +451,26 @@ void Renderer_VX::RenderToClipMask(Rml::ClipMaskOperation operation,
     }
 
     m_CommandBuffer.cmdBindPipeline(vk::PipelineBindPoint::eGraphics,
-                                    m_Pipelines[ClipPipeline]);
-    m_CommandBuffer.cmdPushConstants(m_PipelineLayouts[ClipPipeline],
-        vk::ShaderStageFlagBits::bVertex,
-        FIELD(VsInput, translate), &translation);
-    const vk::DeviceSize offset = 0;
-    m_CommandBuffer.cmdBindVertexBuffers(0, 1, &g->m_Buffer, &offset);
-    m_CommandBuffer.cmdBindIndexBuffer(g->m_Buffer,
-        g->m_VertexCount * sizeof(Rml::Vertex),
-        vk::IndexType::eUint32);
-    m_CommandBuffer.cmdDrawIndexed(g->m_IndexCount, 1, 0, 0, 0);
+                                    m_ClipPipeline);
+    m_CommandBuffer.cmdPushConstants(m_BasicPipelineLayout,
+                                     vk::ShaderStageFlagBits::bVertex,
+                                     FIELD(VsInput, translate), &translation);
+    m_CommandBuffer.cmdSetStencilOp(
+        vk::StencilFaceFlagBits::eFrontAndBack, vk::StencilOp::eKeep,
+        stencilPassOp, vk::StencilOp::eKeep, vk::CompareOp::eAlways);
+
+    g->Draw(m_CommandBuffer);
+
+    m_CommandBuffer.cmdSetStencilReference(
+        vk::StencilFaceFlagBits::eFrontAndBack, m_StencilRef);
 }
 
-void Renderer_VX::InitPipelines(vk::RenderPass renderPass) {
+void Renderer_VX::InitPipelineLayouts() {
     const auto device = m_Backend->GetDevice(this);
+
+    check(device.createTypedDescriptorSetLayout(
+        &m_DescriptorSetLayout,
+        vk::DescriptorSetLayoutCreateFlagBits::bPushDescriptorKHR));
 
     vk::PushConstantRange pushConstantRange;
     pushConstantRange.setStageFlags(vk::ShaderStageFlagBits::bVertex);
@@ -450,17 +481,18 @@ void Renderer_VX::InitPipelines(vk::RenderPass renderPass) {
     pipelineLayoutInfo.setPushConstantRangeCount(1);
     pipelineLayoutInfo.setPushConstantRanges(&pushConstantRange);
 
-    m_PipelineLayouts[ClipPipeline] =
-        device.createPipelineLayout(pipelineLayoutInfo).get();
-
-    m_PipelineLayouts[ColorPipeline] =
+    m_BasicPipelineLayout =
         device.createPipelineLayout(pipelineLayoutInfo).get();
 
     pipelineLayoutInfo.setSetLayoutCount(1);
     pipelineLayoutInfo.setSetLayouts(&m_DescriptorSetLayout);
 
-    m_PipelineLayouts[TexturePipeline] =
+    m_TexturePipelineLayout =
         device.createPipelineLayout(pipelineLayoutInfo).get();
+}
+
+void Renderer_VX::InitPipelines(vk::RenderPass renderPass) {
+    const auto device = m_Backend->GetDevice(this);
 
     const auto clipShader = device.createShaderModule(shader_clip).get();
     const auto vertShader = device.createShaderModule(shader_vert).get();
@@ -471,57 +503,72 @@ void Renderer_VX::InitPipelines(vk::RenderPass renderPass) {
 
     vx::GraphicsPipelineBuilder pipelineBuilder;
     pipelineBuilder.setRenderPass(renderPass);
+    pipelineBuilder.setTopology(vk::PrimitiveTopology::eTriangleList);
     pipelineBuilder.setPolygonMode(vk::PolygonMode::eFill);
     pipelineBuilder.setFrontFace(vk::FrontFace::eClockwise);
     pipelineBuilder.setCullMode(vk::CullModeFlagBits::eNone);
 
-    vk::DynamicState dynamicStates[] = {vk::DynamicState::eViewport,
-                                        vk::DynamicState::eScissor,
-                                        vk::DynamicState::eStencilTestEnable};
-    pipelineBuilder.m_dynamicStateInfo.setDynamicStates(dynamicStates);
-
-    vk::PipelineShaderStageCreateInfo shaderStageInfos[2] = {
-        vx::makePipelineShaderStageCreateInfo(vk::ShaderStageFlagBits::bVertex,
-                                              {}),
-        vx::makePipelineShaderStageCreateInfo(
-            vk::ShaderStageFlagBits::bFragment, {}),
-    };
+    vk::PipelineShaderStageCreateInfo shaderStageInfos[2];
     pipelineBuilder.m_pipelineInfo.setStages(shaderStageInfos);
 
-    pipelineBuilder.setLayout(m_PipelineLayouts[ClipPipeline]);
+    vk::DynamicState dynamicStates[4];
+    pipelineBuilder.m_dynamicStateInfo.setDynamicStates(dynamicStates);
 
-    pipelineBuilder.setTopology(vk::PrimitiveTopology::eTriangleStrip);
+    shaderStageInfos[0] = vx::makePipelineShaderStageCreateInfo(
+        vk::ShaderStageFlagBits::bVertex, {});
     pipelineBuilder.m_pipelineInfo.setStageCount(1);
-    pipelineBuilder.m_dynamicStateInfo.setDynamicStateCount(2);
 
-    shaderStageInfos[0].setModule(clipShader);
+    dynamicStates[0] = vk::DynamicState::eViewport;
+    dynamicStates[1] = vk::DynamicState::eScissor;
+    dynamicStates[2] = vk::DynamicState::eStencilOp;
+    pipelineBuilder.m_dynamicStateInfo.setDynamicStateCount(3);
 
     pipelineBuilder.enableStencilTest();
     vk::StencilOpState stencilOp;
-    stencilOp.setCompareMask(1);
-    stencilOp.setCompareOp(vk::CompareOp::eAlways);
+    stencilOp.setCompareMask(~0u);
     stencilOp.setReference(1);
-    stencilOp.setWriteMask(1);
-    stencilOp.setPassOp(vk::StencilOp::eReplace);
+    stencilOp.setWriteMask(~0u);
     pipelineBuilder.setFrontStencilOp(stencilOp);
     pipelineBuilder.setBackStencilOp(stencilOp);
 
-    m_Pipelines[ClipPipeline] = pipelineBuilder.build(device).get();
+    vk::VertexInputBindingDescription vertexBindingDescriptions[1];
+    vertexBindingDescriptions[0].setBinding(0);
+    vertexBindingDescriptions[0].setStride(sizeof(Rml::Vertex));
+    vertexBindingDescriptions[0].setInputRate(vk::VertexInputRate::eVertex);
+    pipelineBuilder.setVertexBindingDescriptions(vertexBindingDescriptions);
 
-    pipelineBuilder.setTopology(vk::PrimitiveTopology::eTriangleList);
+    vk::VertexInputAttributeDescription vertexAttributeDescriptions[3];
+    pipelineBuilder.m_vertexInputStateInfo.setVertexAttributeDescriptions(
+        vertexAttributeDescriptions);
+
+    vertexAttributeDescriptions[0].setLocation(0);
+    vertexAttributeDescriptions[0].setBinding(0);
+    vertexAttributeDescriptions[0].setFormat(vk::Format::eR32G32Sfloat);
+    vertexAttributeDescriptions[0].setOffset(offsetof(Rml::Vertex, position));
+    pipelineBuilder.m_vertexInputStateInfo.setVertexAttributeDescriptionCount(
+        1);
+
+    pipelineBuilder.setLayout(m_BasicPipelineLayout);
+    shaderStageInfos[0].setModule(clipShader);
+
+    m_ClipPipeline = pipelineBuilder.build(device).get();
+
+    shaderStageInfos[1] = vx::makePipelineShaderStageCreateInfo(
+        vk::ShaderStageFlagBits::bFragment, {});
     pipelineBuilder.m_pipelineInfo.setStageCount(2);
-    pipelineBuilder.m_dynamicStateInfo.setDynamicStateCount(3);
+
+    dynamicStates[2] = vk::DynamicState::eStencilTestEnable;
+    dynamicStates[3] = vk::DynamicState::eStencilReference;
+    pipelineBuilder.m_dynamicStateInfo.setDynamicStateCount(4);
 
     stencilOp.setCompareOp(vk::CompareOp::eEqual);
     stencilOp.setWriteMask(0);
+    stencilOp.setFailOp(vk::StencilOp::eKeep);
     stencilOp.setPassOp(vk::StencilOp::eKeep);
+    stencilOp.setDepthFailOp(vk::StencilOp::eKeep);
     pipelineBuilder.setFrontStencilOp(stencilOp);
     pipelineBuilder.setBackStencilOp(stencilOp);
 
-    // pipelineBuilder.enableDepthTest();
-    // pipelineBuilder.enableDepthWrite();
-    pipelineBuilder.setDepthCompareOp(vk::CompareOp::eAlways);
-    pipelineBuilder.setDepthBounds(0.f, 1.f);
     pipelineBuilder.setColorWriteMask(
         vk::ColorComponentFlagBits::bR | vk::ColorComponentFlagBits::bG |
         vk::ColorComponentFlagBits::bB | vk::ColorComponentFlagBits::bA);
@@ -531,17 +578,6 @@ void Renderer_VX::InitPipelines(vk::RenderPass renderPass) {
     pipelineBuilder.setAlphaBlend(vk::BlendOp::eAdd, vk::BlendFactor::eOne,
                                   vk::BlendFactor::eOneMinusSrcAlpha);
 
-    vk::VertexInputBindingDescription vertexBindingDescriptions[1];
-    vertexBindingDescriptions[0].setBinding(0);
-    vertexBindingDescriptions[0].setStride(sizeof(Rml::Vertex));
-    vertexBindingDescriptions[0].setInputRate(vk::VertexInputRate::eVertex);
-    pipelineBuilder.setVertexBindingDescriptions(vertexBindingDescriptions);
-
-    vk::VertexInputAttributeDescription vertexAttributeDescriptions[3];
-    vertexAttributeDescriptions[0].setLocation(0);
-    vertexAttributeDescriptions[0].setBinding(0);
-    vertexAttributeDescriptions[0].setFormat(vk::Format::eR32G32Sfloat);
-    vertexAttributeDescriptions[0].setOffset(offsetof(Rml::Vertex, position));
     vertexAttributeDescriptions[1].setLocation(1);
     vertexAttributeDescriptions[1].setBinding(0);
     vertexAttributeDescriptions[1].setFormat(vk::Format::eR8G8B8A8Unorm);
@@ -550,18 +586,18 @@ void Renderer_VX::InitPipelines(vk::RenderPass renderPass) {
     vertexAttributeDescriptions[2].setBinding(0);
     vertexAttributeDescriptions[2].setFormat(vk::Format::eR32G32Sfloat);
     vertexAttributeDescriptions[2].setOffset(offsetof(Rml::Vertex, tex_coord));
-    pipelineBuilder.setVertexAttributeDescriptions(vertexAttributeDescriptions);
+    pipelineBuilder.m_vertexInputStateInfo.setVertexAttributeDescriptionCount(
+        3);
 
-    pipelineBuilder.setLayout(m_PipelineLayouts[ColorPipeline]);
     shaderStageInfos[0].setModule(vertShader);
     shaderStageInfos[1].setModule(colorFragShader);
 
-    m_Pipelines[ColorPipeline] = pipelineBuilder.build(device).get();
+    m_ColorPipeline = pipelineBuilder.build(device).get();
 
-    pipelineBuilder.setLayout(m_PipelineLayouts[TexturePipeline]);
+    pipelineBuilder.setLayout(m_TexturePipelineLayout);
     shaderStageInfos[1].setModule(textureFragShader);
 
-    m_Pipelines[TexturePipeline] = pipelineBuilder.build(device).get();
+    m_TexturePipeline = pipelineBuilder.build(device).get();
 
     device.destroyShaderModule(clipShader);
     device.destroyShaderModule(vertShader);
