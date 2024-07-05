@@ -276,7 +276,7 @@ struct BackendContext {
         m_Renderer.ResetFrame(m_FrameNumber);
         if (auto ret = m_Device.acquireNextImageKHR(
                 m_Swapchain, UINT64_MAX, syncObject.m_AcquireSemaphore);
-            ret.result == vk::Result::eErrorOutOfDateKHR) {
+            ret.result == vk::Result::eErrorOutOfDateKHR) [[unlikely]] {
             RecreateSwapchain();
         } else {
             if (ret.result == vk::Result::eSuboptimalKHR) {
@@ -327,7 +327,7 @@ struct BackendContext {
         vk::SemaphoreSubmitInfo renderSemaphoreInfo;
         renderSemaphoreInfo.setSemaphore(syncObject.m_RenderSemaphore);
         renderSemaphoreInfo.setStageMask(
-            vk::PipelineStageFlagBits2::bAllGraphics);
+            vk::PipelineStageFlagBits2::bColorAttachmentOutput);
         vk::SubmitInfo2 submitInfo;
         submitInfo.setCommandBufferInfoCount(1);
         submitInfo.setCommandBufferInfos(&bufferSubmitInfo);
@@ -383,6 +383,20 @@ struct BackendContext {
                 Rml::Math::Min(context->GetNextUpdateDelay(), 10.0));
         } else {
             glfwPollEvents();
+        }
+        // In case the window is mimimized, the renderer cannot accept any
+        // render calls. We keep the application inside this loop until we are
+        // able to render.
+        for (;;) {
+            int width, height;
+            glfwGetFramebufferSize(m_Window, &width, &height);
+            if (width) {
+                break;
+            }
+            glfwWaitEvents();
+            if (glfwWindowShouldClose(m_Window)) {
+                return false;
+            }
         }
         if (m_RecreateSwapchain) {
             RecreateSwapchain();
@@ -706,9 +720,27 @@ struct BackendContext {
             vk::ImageAspectFlagBits::bStencil);
         subpass.setDepthStencilAttachment(&depthStencilAttachmentCount);
 
-        vk::SubpassDependency2 subpassDependency;
-        subpassDependency.setSrcSubpass(VK_SUBPASS_EXTERNAL);
-        subpassDependency.setDstSubpass(0);
+        // See
+        // https://docs.vulkan.org/guide/latest/synchronization_examples.html#_swapchain_image_acquire_and_present
+        vk::SubpassDependency2 subpassDependencies[2];
+        subpassDependencies[0].setSrcSubpass(VK_SUBPASS_EXTERNAL);
+        subpassDependencies[0].setSrcStageMask(
+            vk::PipelineStageFlagBits::bColorAttachmentOutput);
+        subpassDependencies[0].setSrcAccessMask(vk::AccessFlagBits::eNone);
+        subpassDependencies[0].setDstSubpass(0);
+        subpassDependencies[0].setDstStageMask(
+            vk::PipelineStageFlagBits::bColorAttachmentOutput);
+        subpassDependencies[0].setDstAccessMask(
+            vk::AccessFlagBits::bColorAttachmentWrite);
+        subpassDependencies[1].setSrcSubpass(0);
+        subpassDependencies[1].setSrcStageMask(
+            vk::PipelineStageFlagBits::bColorAttachmentOutput);
+        subpassDependencies[1].setSrcAccessMask(
+            vk::AccessFlagBits::bColorAttachmentWrite);
+        subpassDependencies[1].setDstSubpass(VK_SUBPASS_EXTERNAL);
+        subpassDependencies[1].setDstStageMask(
+            vk::PipelineStageFlagBits::bColorAttachmentOutput);
+        subpassDependencies[1].setDstAccessMask(vk::AccessFlagBits::eNone);
 
         vk::RenderPassCreateInfo2 renderPassInfo;
         renderPassInfo.setSubpassCount(1);
@@ -716,8 +748,9 @@ struct BackendContext {
         renderPassInfo.setAttachmentCount(
             uint32_t(std::size(attachmentDescriptions)));
         renderPassInfo.setAttachments(attachmentDescriptions);
-        renderPassInfo.setDependencyCount(1);
-        renderPassInfo.setDependencies(&subpassDependency);
+        renderPassInfo.setDependencyCount(
+            uint32_t(std::size(subpassDependencies)));
+        renderPassInfo.setDependencies(subpassDependencies);
 
         m_RenderPass = m_Device.createRenderPass2(renderPassInfo).get();
     }
