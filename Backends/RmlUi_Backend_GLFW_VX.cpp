@@ -722,7 +722,7 @@ struct BackendContext {
 
         // See
         // https://docs.vulkan.org/guide/latest/synchronization_examples.html#_swapchain_image_acquire_and_present
-        vk::SubpassDependency2 subpassDependencies[2];
+        vk::SubpassDependency2 subpassDependencies[3];
         subpassDependencies[0].setSrcSubpass(VK_SUBPASS_EXTERNAL);
         subpassDependencies[0].setSrcStageMask(
             vk::PipelineStageFlagBits::bColorAttachmentOutput);
@@ -732,15 +732,26 @@ struct BackendContext {
             vk::PipelineStageFlagBits::bColorAttachmentOutput);
         subpassDependencies[0].setDstAccessMask(
             vk::AccessFlagBits::bColorAttachmentWrite);
-        subpassDependencies[1].setSrcSubpass(0);
+        subpassDependencies[1].setSrcSubpass(VK_SUBPASS_EXTERNAL);
         subpassDependencies[1].setSrcStageMask(
-            vk::PipelineStageFlagBits::bColorAttachmentOutput);
+            vk::PipelineStageFlagBits::bLateFragmentTests);
         subpassDependencies[1].setSrcAccessMask(
-            vk::AccessFlagBits::bColorAttachmentWrite);
-        subpassDependencies[1].setDstSubpass(VK_SUBPASS_EXTERNAL);
+            vk::AccessFlagBits::bDepthStencilAttachmentWrite);
+        subpassDependencies[1].setDstSubpass(0);
         subpassDependencies[1].setDstStageMask(
+            vk::PipelineStageFlagBits::bEarlyFragmentTests |
+            vk::PipelineStageFlagBits::bLateFragmentTests);
+        subpassDependencies[1].setDstAccessMask(
+            vk::AccessFlagBits::bDepthStencilAttachmentWrite);
+        subpassDependencies[2].setSrcSubpass(0);
+        subpassDependencies[2].setSrcStageMask(
             vk::PipelineStageFlagBits::bColorAttachmentOutput);
-        subpassDependencies[1].setDstAccessMask(vk::AccessFlagBits::eNone);
+        subpassDependencies[2].setSrcAccessMask(
+            vk::AccessFlagBits::bColorAttachmentWrite);
+        subpassDependencies[2].setDstSubpass(VK_SUBPASS_EXTERNAL);
+        subpassDependencies[2].setDstStageMask(
+            vk::PipelineStageFlagBits::bColorAttachmentOutput);
+        subpassDependencies[2].setDstAccessMask(vk::AccessFlagBits::eNone);
 
         vk::RenderPassCreateInfo2 renderPassInfo;
         renderPassInfo.setSubpassCount(1);
