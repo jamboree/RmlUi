@@ -108,9 +108,6 @@ bool Renderer_VX::Init(const Backend& backend, vk::RenderPass renderPass,
     m_Backend = &backend;
     m_FrameResources.reset(new FrameResources[frameCount]);
 
-    InitPipelineLayouts();
-    InitPipelines(renderPass);
-
     const auto device = m_Backend->GetDevice(this);
 
     vk::SamplerCreateInfo samplerInfo;
@@ -120,6 +117,9 @@ bool Renderer_VX::Init(const Backend& backend, vk::RenderPass renderPass,
     samplerInfo.setAddressModeV(vk::SamplerAddressMode::eRepeat);
     samplerInfo.setAddressModeW(vk::SamplerAddressMode::eRepeat);
     m_Sampler = device.createSampler(samplerInfo).get();
+
+    InitPipelineLayouts();
+    InitPipelines(renderPass);
 
     return true;
 }
@@ -247,11 +247,11 @@ void Renderer_VX::RenderGeometry(Rml::CompiledGeometryHandle handle,
         pipelineLayout = m_TexturePipelineLayout;
         const auto t = frameResources.UseTexture(texture);
         const vx::DescriptorSet<MyDescriptorSet> descriptorSet;
-        m_CommandBuffer.cmdPushTypedDescriptorSetKHR(
+        m_CommandBuffer.cmdPushDescriptorSetKHR(
             vk::PipelineBindPoint::eGraphics, pipelineLayout, 0,
-            descriptorSet->tex = vx::CombinedImageSamplerDescriptor(
-                m_Sampler, t->m_ImageView,
-                vk::ImageLayout::eShaderReadOnlyOptimal));
+            {descriptorSet->tex = vx::CombinedImageSamplerDescriptor(
+                 m_Sampler, t->m_ImageView,
+                 vk::ImageLayout::eShaderReadOnlyOptimal)});
     }
     m_CommandBuffer.cmdBindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
     m_CommandBuffer.cmdPushConstants(pipelineLayout,
