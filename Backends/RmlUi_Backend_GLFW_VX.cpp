@@ -8,33 +8,6 @@
 #include <RmlUi/Core/Log.h>
 #include <GLFW/glfw3.h>
 
-struct DeviceFeatures : vk::PhysicalDeviceFeatures2 {
-    vk::PhysicalDeviceSynchronization2Features m_Synchronization2;
-    vk::PhysicalDeviceBufferDeviceAddressFeatures m_BufferDeviceAddress;
-    vk::PhysicalDeviceDynamicRenderingFeatures m_DynamicRendering;
-
-    DeviceFeatures() noexcept {
-        chain(m_Synchronization2)
-            .chain(m_BufferDeviceAddress)
-            .chain(m_DynamicRendering);
-    }
-
-    bool Init(vk::PhysicalDevice physicalDevice) {
-        DeviceFeatures supported;
-        physicalDevice.getFeatures2(&supported);
-        if (!supported.m_Synchronization2.getSynchronization2())
-            return false;
-        m_Synchronization2.setSynchronization2(true);
-        if (!supported.m_BufferDeviceAddress.getBufferDeviceAddress())
-            return false;
-        m_BufferDeviceAddress.setBufferDeviceAddress(true);
-        if (!supported.m_DynamicRendering.getDynamicRendering())
-            return false;
-        m_DynamicRendering.setDynamicRendering(true);
-        return true;
-    }
-};
-
 struct PhysicalDeviceInfo {
     vk::PhysicalDeviceProperties m_Properties;
     vx::List<vk::QueueFamilyProperties> m_QueueFamilyProperties;
@@ -99,6 +72,33 @@ struct BackendContext {
     static constexpr const char* const RequiredDeviceExtensions[] = {
         VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME,
         VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME};
+
+    struct DeviceFeatures : vk::PhysicalDeviceFeatures2 {
+        vk::PhysicalDeviceSynchronization2Features m_Synchronization2;
+        vk::PhysicalDeviceBufferDeviceAddressFeatures m_BufferDeviceAddress;
+        // vk::PhysicalDeviceDynamicRenderingFeatures m_DynamicRendering;
+
+        DeviceFeatures() noexcept {
+            chain(m_Synchronization2);
+            chain(m_BufferDeviceAddress);
+            // chain(m_DynamicRendering);
+        }
+
+        bool Init(vk::PhysicalDevice physicalDevice) {
+            DeviceFeatures supported;
+            physicalDevice.getFeatures2(&supported);
+            if (!supported.m_Synchronization2.getSynchronization2())
+                return false;
+            m_Synchronization2.setSynchronization2(true);
+            if (!supported.m_BufferDeviceAddress.getBufferDeviceAddress())
+                return false;
+            m_BufferDeviceAddress.setBufferDeviceAddress(true);
+            // if (!supported.m_DynamicRendering.getDynamicRendering())
+            //    return false;
+            // m_DynamicRendering.setDynamicRendering(true);
+            return true;
+        }
+    };
 
     GLFWwindow* m_Window = nullptr;
 
@@ -796,8 +796,7 @@ struct BackendContext {
         swapchainInfo.setImageExtent(m_FrameExtent);
         swapchainInfo.setImageArrayLayers(1);
         swapchainInfo.setImageUsage(vk::ImageUsageFlagBits::bColorAttachment |
-                                    vk::ImageUsageFlagBits::bTransferDst |
-                                    vk::ImageUsageFlagBits::bStorage);
+                                    vk::ImageUsageFlagBits::bTransferDst);
         swapchainInfo.setImageSharingMode(vk::SharingMode::eExclusive);
         swapchainInfo.setPreTransform(
             vk::SurfaceTransformFlagBitsKHR::bIdentity);
