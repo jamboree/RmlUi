@@ -820,6 +820,7 @@ void RenderInterface_GL3::BeginFrame()
 	glstate_backup.enable_blend = glIsEnabled(GL_BLEND);
 	glstate_backup.enable_stencil_test = glIsEnabled(GL_STENCIL_TEST);
 	glstate_backup.enable_scissor_test = glIsEnabled(GL_SCISSOR_TEST);
+	glstate_backup.enable_depth_test = glIsEnabled(GL_DEPTH_TEST);
 
 	glGetIntegerv(GL_VIEWPORT, glstate_backup.viewport);
 	glGetIntegerv(GL_SCISSOR_BOX, glstate_backup.scissor);
@@ -879,6 +880,8 @@ void RenderInterface_GL3::BeginFrame()
 	glStencilMask(GLuint(-1));
 	glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
 
+	glDisable(GL_DEPTH_TEST);
+
 	SetTransform(nullptr);
 
 	render_layers.BeginFrame(viewport_width, viewport_height);
@@ -935,6 +938,11 @@ void RenderInterface_GL3::EndFrame()
 		glEnable(GL_SCISSOR_TEST);
 	else
 		glDisable(GL_SCISSOR_TEST);
+
+	if (glstate_backup.enable_depth_test)
+		glEnable(GL_DEPTH_TEST);
+	else
+		glDisable(GL_DEPTH_TEST);
 
 	glViewport(glstate_backup.viewport[0], glstate_backup.viewport[1], glstate_backup.viewport[2], glstate_backup.viewport[3]);
 	glScissor(glstate_backup.scissor[0], glstate_backup.scissor[1], glstate_backup.scissor[2], glstate_backup.scissor[3]);
@@ -1928,24 +1936,23 @@ void RenderInterface_GL3::PopLayer()
 	glBindFramebuffer(GL_FRAMEBUFFER, render_layers.GetTopLayer().framebuffer);
 }
 
-Rml::TextureHandle RenderInterface_GL3::SaveLayerAsTexture(Rml::Vector2i dimensions)
+Rml::TextureHandle RenderInterface_GL3::SaveLayerAsTexture()
 {
-	Rml::TextureHandle render_texture = GenerateTexture({}, dimensions);
+	RMLUI_ASSERT(scissor_state.Valid());
+	const Rml::Rectanglei bounds = scissor_state;
+
+	Rml::TextureHandle render_texture = GenerateTexture({}, bounds.Size());
 	if (!render_texture)
 		return {};
 
 	BlitLayerToPostprocessPrimary(render_layers.GetTopLayerHandle());
 
-	RMLUI_ASSERT(scissor_state.Valid() && render_texture);
-	const Rml::Rectanglei initial_scissor_state = scissor_state;
 	EnableScissorRegion(false);
 
 	const Gfx::FramebufferData& source = render_layers.GetPostprocessPrimary();
 	const Gfx::FramebufferData& destination = render_layers.GetPostprocessSecondary();
 	glBindFramebuffer(GL_READ_FRAMEBUFFER, source.framebuffer);
 	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, destination.framebuffer);
-
-	Rml::Rectanglei bounds = initial_scissor_state;
 
 	// Flip the image vertically, as that convention is used for textures, and move to origin.
 	glBlitFramebuffer(                                  //
@@ -1962,7 +1969,7 @@ Rml::TextureHandle RenderInterface_GL3::SaveLayerAsTexture(Rml::Vector2i dimensi
 	glBindFramebuffer(GL_READ_FRAMEBUFFER, texture_source.framebuffer);
 	glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, bounds.Width(), bounds.Height());
 
-	SetScissor(initial_scissor_state);
+	SetScissor(bounds);
 	glBindFramebuffer(GL_FRAMEBUFFER, render_layers.GetTopLayer().framebuffer);
 	Gfx::CheckGLError("SaveLayerAsTexture");
 
@@ -2137,7 +2144,7 @@ bool RmlGL3::Initialize(Rml::String* out_message)
 	}
 
 	if (out_message)
-		*out_message = Rml::CreateString(128, "Loaded OpenGL %d.%d.", GLAD_VERSION_MAJOR(gl_version), GLAD_VERSION_MINOR(gl_version));
+		*out_message = Rml::CreateString("Loaded OpenGL %d.%d.", GLAD_VERSION_MAJOR(gl_version), GLAD_VERSION_MINOR(gl_version));
 #endif
 
 	return true;
