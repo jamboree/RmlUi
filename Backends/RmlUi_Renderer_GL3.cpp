@@ -1432,6 +1432,15 @@ void RenderInterface_GL3::RenderBlur(float sigma, const Gfx::FramebufferData& so
 	Gfx::BindTexture(source_destination);
 	glBindFramebuffer(GL_FRAMEBUFFER, temp.framebuffer);
 
+	// Add a 1px transparent border around the blur region by first clearing with a padded scissor. This helps prevent
+	// artifacts when upscaling the blur result in the later step. On Intel and AMD, we have observed that during
+	// blitting with linear filtering, pixels outside the 'src' region can be blended into the output. On the other
+	// hand, it looks like Nvidia clamps the pixels to the source edge, which is what we really want. Regardless, we
+	// work around the issue with this extra step.
+	SetScissor(scissor.Extend(1), true);
+	glClear(GL_COLOR_BUFFER_BIT);
+	SetScissor(scissor, true);
+
 	SetTexelOffset({1.f, 0.f}, source_destination.width);
 	DrawFullscreenQuad();
 
@@ -1506,7 +1515,7 @@ Rml::CompiledFilterHandle RenderInterface_GL3::CompileFilter(const Rml::String& 
 	else if (name == "blur")
 	{
 		filter.type = FilterType::Blur;
-		filter.sigma = 0.5f * Rml::Get(parameters, "radius", 1.0f);
+		filter.sigma = Rml::Get(parameters, "sigma", 1.0f);
 	}
 	else if (name == "drop-shadow")
 	{
@@ -1773,8 +1782,8 @@ void RenderInterface_GL3::RenderFilters(Rml::Span<const Rml::CompiledFilterHandl
 		case FilterType::Passthrough:
 		{
 			UseProgram(ProgramId::Passthrough);
-			glBlendFunc(GL_CONSTANT_ALPHA, GL_ZERO);
-			glBlendColor(0.0f, 0.0f, 0.0f, filter.blend_factor);
+			glBlendFunc(GL_CONSTANT_COLOR, GL_ZERO);
+			glBlendColor(filter.blend_factor, filter.blend_factor, filter.blend_factor, filter.blend_factor);
 
 			const Gfx::FramebufferData& source = render_layers.GetPostprocessPrimary();
 			const Gfx::FramebufferData& destination = render_layers.GetPostprocessSecondary();

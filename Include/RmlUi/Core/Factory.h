@@ -125,33 +125,30 @@ public:
 	/// @param[in] name The name of the decorator the instancer will be called for.
 	/// @param[in] instancer The instancer to call when the decorator name is encountered.
 	/// @lifetime The instancer must be kept alive until after the call to Rml::Shutdown.
-	/// @return The added instancer if the registration was successful, nullptr otherwise.
 	static void RegisterDecoratorInstancer(const String& name, DecoratorInstancer* instancer);
 	/// Retrieves a decorator instancer registered with the factory.
 	/// @param[in] name The name of the desired decorator type.
-	/// @return The decorator instancer it it exists, nullptr otherwise.
+	/// @return The decorator instancer if it exists, nullptr otherwise.
 	static DecoratorInstancer* GetDecoratorInstancer(const String& name);
 
 	/// Registers a non-owning pointer to an instancer that will be used to instance filters.
 	/// @param[in] name The name of the filter the instancer will be called for.
 	/// @param[in] instancer The instancer to call when the filter name is encountered.
 	/// @lifetime The instancer must be kept alive until after the call to Rml::Shutdown.
-	/// @return The added instancer if the registration was successful, nullptr otherwise.
 	static void RegisterFilterInstancer(const String& name, FilterInstancer* instancer);
 	/// Retrieves a filter instancer registered with the factory.
 	/// @param[in] name The name of the desired filter type.
-	/// @return The filter instancer it it exists, nullptr otherwise.
+	/// @return The filter instancer if it exists, nullptr otherwise.
 	static FilterInstancer* GetFilterInstancer(const String& name);
 
 	/// Registers a non-owning pointer to an instancer that will be used to instance font effects.
 	/// @param[in] name The name of the font effect the instancer will be called for.
 	/// @param[in] instancer The instancer to call when the font effect name is encountered.
 	/// @lifetime The instancer must be kept alive until after the call to Rml::Shutdown.
-	/// @return The added instancer if the registration was successful, nullptr otherwise.
 	static void RegisterFontEffectInstancer(const String& name, FontEffectInstancer* instancer);
 	/// Retrieves a font-effect instancer registered with the factory.
 	/// @param[in] name The name of the desired font-effect type.
-	/// @return The font-effect instancer it it exists, nullptr otherwise.
+	/// @return The font-effect instancer if it exists, nullptr otherwise.
 	static FontEffectInstancer* GetFontEffectInstancer(const String& name);
 
 	/// Creates a style sheet from a user-generated string.
@@ -162,7 +159,7 @@ public:
 	/// @param[in] file_name The location of the style sheet file.
 	/// @return A pointer to the newly created style sheet.
 	static SharedPtr<StyleSheetContainer> InstanceStyleSheetFile(const String& file_name);
-	/// Creates a style sheet from an Stream.
+	/// Creates a style sheet from a Stream.
 	/// @param[in] stream A pointer to the stream containing the style sheet's contents.
 	/// @return A pointer to the newly created style sheet.
 	static SharedPtr<StyleSheetContainer> InstanceStyleSheetStream(Stream* stream);
@@ -189,6 +186,7 @@ public:
 	static void RegisterEventListenerInstancer(EventListenerInstancer* instancer);
 	/// Instance an event listener with the given string. This is used for instancing listeners for the on* events from RML.
 	/// @param[in] value The parameters to the event listener.
+	/// @param[in] element The element that initiates the call to the instancer.
 	/// @return The instanced event listener.
 	static EventListener* InstanceEventListener(const String& value, Element* element);
 

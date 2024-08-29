@@ -71,7 +71,7 @@ TestsRenderInterface shell_render_interface;
 #endif
 } // namespace
 
-static void InitializeShell(bool allow_debugger)
+static void InitializeShell(bool allow_debugger, Rml::RenderInterface* override_render_interface)
 {
 	if (shell_initialized)
 		return;
@@ -105,7 +105,7 @@ static void InitializeShell(bool allow_debugger)
 #else
 	// Set our custom system and render interfaces.
 	Rml::SetSystemInterface(&tests_system_interface);
-	Rml::SetRenderInterface(&shell_render_interface);
+	Rml::SetRenderInterface(override_render_interface ? override_render_interface : &shell_render_interface);
 
 	REQUIRE(Rml::Initialise());
 	shell_context = Rml::CreateContext("main", window_size);
@@ -113,9 +113,9 @@ static void InitializeShell(bool allow_debugger)
 #endif
 }
 
-Rml::Context* TestsShell::GetContext(bool allow_debugger)
+Rml::Context* TestsShell::GetContext(bool allow_debugger, Rml::RenderInterface* override_render_interface)
 {
-	InitializeShell(allow_debugger);
+	InitializeShell(allow_debugger, override_render_interface);
 	return shell_context;
 }
 
@@ -168,10 +168,10 @@ void TestsShell::ShutdownShell()
 
 	Rml::Shutdown();
 
-	shell_render_interface.Reset();
-
 #ifdef RMLUI_TESTS_USE_SHELL
 	Backend::Shutdown();
+#else
+	shell_render_interface.Reset();
 #endif
 
 	Shell::Shutdown();
