@@ -125,7 +125,10 @@ static Rml::UniquePtr<BackendData> data;
 bool Backend::Initialize(const char* window_name, int width, int height, bool allow_resize)
 {
 	RMLUI_ASSERT(!data);
-
+	if (volkInitialize()) {
+		Rml::Log::Message(Rml::Log::LT_ERROR, "Failed to initialize Vulkan");
+		return false;
+	}
 	const std::wstring name = RmlWin32::ConvertToUTF16(Rml::String(window_name));
 
 	data = Rml::MakeUnique<BackendData>();
@@ -181,6 +184,7 @@ void Backend::Shutdown()
 	::UnregisterClassW((LPCWSTR)data->instance_name.data(), data->instance_handle);
 
 	data.reset();
+	volkFinalize();
 }
 
 Rml::SystemInterface* Backend::GetSystemInterface()
