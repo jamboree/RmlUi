@@ -37,6 +37,7 @@ struct GfxContext_VX {
         VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME};
 
     struct DeviceFeatures;
+    struct RendererContext;
 
     vx::Instance m_Instance;
 #ifndef NDEBUG
@@ -98,7 +99,7 @@ struct GfxContext_VX {
 
     void InitSyncObjects();
 
-    void BuildSwapchain(vk::Extent2D extent);
+    void BuildSwapchain(const vk::SurfaceCapabilitiesKHR& capabilities);
 
     void BuildDepthStencilImage();
 
@@ -114,36 +115,4 @@ struct GfxContext_VX {
     vx::CommandBuffer BeginTransfer();
 
     void EndTransfer();
-
-    static GfxContext_VX* GetContextPtr(void* p) {
-        return reinterpret_cast<GfxContext_VX*>(
-            static_cast<uint8_t*>(p) - offsetof(GfxContext_VX, m_Renderer));
-    }
-
-    static vx::Device GetDeviceImpl(Renderer_VX* p) {
-        return GetContextPtr(p)->m_Device;
-    }
-
-    static vma::Allocator GetAllocatorImpl(Renderer_VX* p) {
-        return GetContextPtr(p)->m_Allocator;
-    }
-
-    static vk::Extent2D GetFrameExtentImpl(Renderer_VX* p) {
-        return GetContextPtr(p)->m_FrameExtent;
-    }
-
-    static vx::CommandBuffer BeginTransferImpl(Renderer_VX* p) {
-        return GetContextPtr(p)->BeginTransfer();
-    }
-
-    static void EndTransferImpl(Renderer_VX* p) {
-        GetContextPtr(p)->EndTransfer();
-    }
-
-    static constexpr Renderer_VX::Backend g_BackendImpl{
-        .GetDevice = GetDeviceImpl,
-        .GetAllocator = GetAllocatorImpl,
-        .GetFrameExtent = GetFrameExtentImpl,
-        .BeginTransfer = BeginTransferImpl,
-        .EndTransfer = EndTransferImpl};
 };

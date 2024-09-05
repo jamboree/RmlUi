@@ -51,6 +51,40 @@ struct GfxContext_VX::DeviceFeatures : vk::PhysicalDeviceFeatures2 {
     }
 };
 
+struct GfxContext_VX::RendererContext {
+    static GfxContext_VX* GetContextPtr(void* p) {
+        return reinterpret_cast<GfxContext_VX*>(
+            static_cast<uint8_t*>(p) - offsetof(GfxContext_VX, m_Renderer));
+    }
+
+    static vx::Device GetDeviceImpl(Renderer_VX* p) {
+        return GetContextPtr(p)->m_Device;
+    }
+
+    static vma::Allocator GetAllocatorImpl(Renderer_VX* p) {
+        return GetContextPtr(p)->m_Allocator;
+    }
+
+    static vk::Extent2D GetFrameExtentImpl(Renderer_VX* p) {
+        return GetContextPtr(p)->m_FrameExtent;
+    }
+
+    static vx::CommandBuffer BeginTransferImpl(Renderer_VX* p) {
+        return GetContextPtr(p)->BeginTransfer();
+    }
+
+    static void EndTransferImpl(Renderer_VX* p) {
+        GetContextPtr(p)->EndTransfer();
+    }
+
+    static constexpr Renderer_VX::Context g_Impl{
+        .GetDevice = GetDeviceImpl,
+        .GetAllocator = GetAllocatorImpl,
+        .GetFrameExtent = GetFrameExtentImpl,
+        .BeginTransfer = BeginTransferImpl,
+        .EndTransfer = EndTransferImpl};
+};
+
 void GfxContext_VX::DestroyFrameResources() {
     for (auto& frameResource : m_FrameResources) {
         if (frameResource.m_Framebuffer) {
@@ -221,8 +255,12 @@ void GfxContext_VX::RecreateRenderTarget(vk::Extent2D extent) {
     DestroyFrameResources();
     DestroyDepthStencilImage();
     m_FrameResources.count = 0;
+    vk::SurfaceCapabilitiesKHR surfaceCapabilities;
+    check(m_PhysicalDevice.getSurfaceCapabilitiesKHR(m_Surface,
+                                                     &surfaceCapabilities));
+    UpdateExtent(surfaceCapabilities, extent);
     const auto oldSwapchain = m_Swapchain;
-    BuildSwapchain(extent);
+    BuildSwapchain(surfaceCapabilities);
     m_Device.destroySwapchainKHR(oldSwapchain);
     BuildDepthStencilImage();
     BuildFrameResources();
@@ -286,7 +324,8 @@ bool GfxContext_VX::InitContext() {
     InitRenderPass();
     InitSyncObjects();
 
-    if (!m_Renderer.Init(g_BackendImpl, m_RenderPass, InFlightCount)) {
+    if (!m_Renderer.Init(RendererContext::g_Impl, m_RenderPass,
+                         InFlightCount)) {
         Rml::Log::Message(Rml::Log::LT_ERROR,
                           "Failed to initialize Vulkan render interface");
         return false;
@@ -296,7 +335,11 @@ bool GfxContext_VX::InitContext() {
 }
 
 void GfxContext_VX::InitRenderTarget(vk::Extent2D extent) {
-    BuildSwapchain(extent);
+    vk::SurfaceCapabilitiesKHR surfaceCapabilities;
+    check(m_PhysicalDevice.getSurfaceCapabilitiesKHR(m_Surface,
+                                                     &surfaceCapabilities));
+    UpdateExtent(surfaceCapabilities, extent);
+    BuildSwapchain(surfaceCapabilities);
     BuildDepthStencilImage();
     BuildFrameResources();
 }
@@ -534,17 +577,12 @@ void GfxContext_VX::InitSyncObjects() {
     m_ImmediateFence = m_Device.createFence(fenceInfo).get();
 }
 
-void GfxContext_VX::BuildSwapchain(vk::Extent2D extent) {
-    vk::SurfaceCapabilitiesKHR surfaceCapabilities;
-    check(m_PhysicalDevice.getSurfaceCapabilitiesKHR(m_Surface,
-                                                     &surfaceCapabilities));
-    UpdateExtent(surfaceCapabilities, extent);
-
+void GfxContext_VX::BuildSwapchain(
+    const vk::SurfaceCapabilitiesKHR& capabilities) {
     vk::SwapchainCreateInfoKHR swapchainInfo;
     swapchainInfo.setSurface(m_Surface);
-    swapchainInfo.setMinImageCount(
-        std::clamp(3u, surfaceCapabilities.getMinImageCount(),
-                   surfaceCapabilities.getMaxImageCount()));
+    swapchainInfo.setMinImageCount(std::clamp(
+        3u, capabilities.getMinImageCount(), capabilities.getMaxImageCount()));
     swapchainInfo.setImageFormat(m_SwapchainImageFormat);
     swapchainInfo.setImageColorSpace(vk::ColorSpaceKHR::eSrgbNonlinear);
     swapchainInfo.setImageExtent(m_FrameExtent);

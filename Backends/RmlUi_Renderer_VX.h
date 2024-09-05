@@ -4,7 +4,7 @@
 #include <vx.hpp>
 
 struct Renderer_VX : Rml::RenderInterface {
-    struct Backend {
+    struct Context {
         vx::Device (&GetDevice)(Renderer_VX*);
         vma::Allocator (&GetAllocator)(Renderer_VX*);
         vk::Extent2D (&GetFrameExtent)(Renderer_VX*);
@@ -15,7 +15,7 @@ struct Renderer_VX : Rml::RenderInterface {
     Renderer_VX();
     ~Renderer_VX();
 
-    bool Init(const Backend& backend, vk::RenderPass renderPass,
+    bool Init(const Context& context, vk::RenderPass renderPass,
               uint32_t frameCount);
     void Shutdown();
 
@@ -75,7 +75,7 @@ private:
     Rml::TextureHandle CreateTexture(vk::Buffer buffer,
                                      Rml::Vector2i dimensions);
 
-    const Backend* m_Backend = nullptr;
+    const Context* m_Context = nullptr;
     std::unique_ptr<FrameResources[]> m_FrameResources;
     vx::DescriptorSetLayout<MyDescriptorSet> m_DescriptorSetLayout;
     vk::PipelineLayout m_BasicPipelineLayout;

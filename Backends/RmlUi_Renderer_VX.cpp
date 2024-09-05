@@ -103,12 +103,12 @@ struct Renderer_VX::FrameResources {
 Renderer_VX::Renderer_VX() = default;
 Renderer_VX::~Renderer_VX() = default;
 
-bool Renderer_VX::Init(const Backend& backend, vk::RenderPass renderPass,
+bool Renderer_VX::Init(const Context& context, vk::RenderPass renderPass,
                        uint32_t frameCount) {
-    m_Backend = &backend;
+    m_Context = &context;
     m_FrameResources.reset(new FrameResources[frameCount]);
 
-    const auto device = m_Backend->GetDevice(this);
+    const auto device = m_Context->GetDevice(this);
 
     vk::SamplerCreateInfo samplerInfo;
     samplerInfo.setMagFilter(vk::Filter::eLinear);
@@ -125,7 +125,7 @@ bool Renderer_VX::Init(const Backend& backend, vk::RenderPass renderPass,
 }
 
 void Renderer_VX::Shutdown() {
-    const auto device = m_Backend->GetDevice(this);
+    const auto device = m_Context->GetDevice(this);
 
     if (m_Sampler) {
         device.destroySampler(m_Sampler);
@@ -150,7 +150,8 @@ void Renderer_VX::Shutdown() {
     }
 }
 
-Rml::Matrix4f Project(vk::Extent2D extent, const Rml::Matrix4f& transform) {
+static Rml::Matrix4f Project(vk::Extent2D extent,
+                             const Rml::Matrix4f& transform) {
     auto projection = Rml::Matrix4f::ProjectOrtho(
         0.0f, float(extent.getWidth()), float(extent.getHeight()), 0.0f, -10000,
         10000);
@@ -171,7 +172,7 @@ void Renderer_VX::BeginFrame(vx::CommandBuffer commandBuffer, uint32_t frame) {
     m_StencilRef = 1;
     m_EnableScissor = false;
 
-    const auto extent = m_Backend->GetFrameExtent(this);
+    const auto extent = m_Context->GetFrameExtent(this);
     m_Scissor.setOffset({});
     m_Scissor.setExtent(extent);
     m_CommandBuffer.cmdSetScissor(0, 1, &m_Scissor);
@@ -201,7 +202,7 @@ void Renderer_VX::ResetFrame(uint32_t frame) {
 Rml::CompiledGeometryHandle
 Renderer_VX::CompileGeometry(Rml::Span<const Rml::Vertex> vertices,
                              Rml::Span<const int> indices) {
-    const auto allocator = m_Backend->GetAllocator(this);
+    const auto allocator = m_Context->GetAllocator(this);
 
     auto g = std::make_unique<GeometryResource>();
     g->m_VertexCount = uint32_t(vertices.size());
@@ -265,7 +266,7 @@ void Renderer_VX::ReleaseGeometry(Rml::CompiledGeometryHandle geometry) {
     if (--g->m_RefCount) {
         return;
     }
-    const auto allocator = m_Backend->GetAllocator(this);
+    const auto allocator = m_Context->GetAllocator(this);
     allocator.destroyBuffer(g->m_Buffer, g->m_Allocation);
     delete g;
 }
@@ -328,7 +329,7 @@ Rml::TextureHandle Renderer_VX::LoadTexture(Rml::Vector2i& texture_dimensions,
     }
 
     auto image_src = buffer.get() + sizeof(TGAHeader);
-    StagingBuffer stagingBuffer{m_Backend->GetAllocator(this)};
+    StagingBuffer stagingBuffer{m_Context->GetAllocator(this)};
 
     auto image_dest = static_cast<uint8_t*>(stagingBuffer.Alloc(image_size));
 
@@ -368,7 +369,7 @@ Rml::TextureHandle Renderer_VX::LoadTexture(Rml::Vector2i& texture_dimensions,
 Rml::TextureHandle
 Renderer_VX::GenerateTexture(Rml::Span<const Rml::byte> source_data,
                              Rml::Vector2i source_dimensions) {
-    StagingBuffer stagingBuffer{m_Backend->GetAllocator(this)};
+    StagingBuffer stagingBuffer{m_Context->GetAllocator(this)};
     std::memcpy(stagingBuffer.Alloc(source_data.size()), source_data.data(),
                 source_data.size());
     return CreateTexture(stagingBuffer.m_Buffer, source_dimensions);
@@ -379,8 +380,8 @@ void Renderer_VX::ReleaseTexture(Rml::TextureHandle texture_handle) {
     if (--t->m_RefCount) {
         return;
     }
-    const auto device = m_Backend->GetDevice(this);
-    const auto allocator = m_Backend->GetAllocator(this);
+    const auto device = m_Context->GetDevice(this);
+    const auto allocator = m_Context->GetAllocator(this);
     device.destroyImageView(t->m_ImageView);
     allocator.destroyImage(t->m_Image, t->m_Allocation);
     delete t;
@@ -390,7 +391,7 @@ void Renderer_VX::EnableScissorRegion(bool enable) {
     m_EnableScissor = enable;
     if (!m_EnableScissor) {
         m_Scissor.setOffset({});
-        m_Scissor.setExtent(m_Backend->GetFrameExtent(this));
+        m_Scissor.setExtent(m_Context->GetFrameExtent(this));
         m_CommandBuffer.cmdSetScissor(0, 1, &m_Scissor);
     }
 }
@@ -404,7 +405,7 @@ void Renderer_VX::SetScissorRegion(Rml::Rectanglei region) {
 }
 
 void Renderer_VX::SetTransform(const Rml::Matrix4f* transform) {
-    const auto extent = m_Backend->GetFrameExtent(this);
+    const auto extent = m_Context->GetFrameExtent(this);
     const auto matrix =
         Project(extent, transform ? *transform : Rml::Matrix4f::Identity());
     m_CommandBuffer.cmdPushConstants(m_BasicPipelineLayout,
@@ -466,7 +467,7 @@ void Renderer_VX::RenderToClipMask(Rml::ClipMaskOperation operation,
 }
 
 void Renderer_VX::InitPipelineLayouts() {
-    const auto device = m_Backend->GetDevice(this);
+    const auto device = m_Context->GetDevice(this);
 
     check(device.createTypedDescriptorSetLayout(
         &m_DescriptorSetLayout,
@@ -492,10 +493,12 @@ void Renderer_VX::InitPipelineLayouts() {
 }
 
 void Renderer_VX::InitPipelines(vk::RenderPass renderPass) {
-    const auto device = m_Backend->GetDevice(this);
+    const auto device = m_Context->GetDevice(this);
 
-    const auto clipShader = device.createShaderModule(shader_clip).get();
-    const auto vertShader = device.createShaderModule(shader_vert).get();
+    const auto clipVertShader =
+        device.createShaderModule(shader_vert_clip).get();
+    const auto mainVertShader =
+        device.createShaderModule(shader_vert_main).get();
     const auto colorFragShader =
         device.createShaderModule(shader_frag_color).get();
     const auto textureFragShader =
@@ -513,6 +516,10 @@ void Renderer_VX::InitPipelines(vk::RenderPass renderPass) {
 
     vk::DynamicState dynamicStates[4];
     pipelineBuilder.m_dynamicStateInfo.setDynamicStates(dynamicStates);
+
+    vk::VertexInputAttributeDescription vertexAttributeDescriptions[3];
+    pipelineBuilder.m_vertexInputStateInfo.setVertexAttributeDescriptions(
+        vertexAttributeDescriptions);
 
     shaderStageInfos[0] = vx::makePipelineShaderStageCreateInfo(
         vk::ShaderStageFlagBits::bVertex, {});
@@ -537,10 +544,6 @@ void Renderer_VX::InitPipelines(vk::RenderPass renderPass) {
     vertexBindingDescriptions[0].setInputRate(vk::VertexInputRate::eVertex);
     pipelineBuilder.setVertexBindingDescriptions(vertexBindingDescriptions);
 
-    vk::VertexInputAttributeDescription vertexAttributeDescriptions[3];
-    pipelineBuilder.m_vertexInputStateInfo.setVertexAttributeDescriptions(
-        vertexAttributeDescriptions);
-
     vertexAttributeDescriptions[0].setLocation(0);
     vertexAttributeDescriptions[0].setBinding(0);
     vertexAttributeDescriptions[0].setFormat(vk::Format::eR32G32Sfloat);
@@ -549,7 +552,7 @@ void Renderer_VX::InitPipelines(vk::RenderPass renderPass) {
         1);
 
     pipelineBuilder.setLayout(m_BasicPipelineLayout);
-    shaderStageInfos[0].setModule(clipShader);
+    shaderStageInfos[0].setModule(clipVertShader);
 
     m_ClipPipeline = pipelineBuilder.build(device).get();
 
@@ -589,7 +592,7 @@ void Renderer_VX::InitPipelines(vk::RenderPass renderPass) {
     pipelineBuilder.m_vertexInputStateInfo.setVertexAttributeDescriptionCount(
         3);
 
-    shaderStageInfos[0].setModule(vertShader);
+    shaderStageInfos[0].setModule(mainVertShader);
     shaderStageInfos[1].setModule(colorFragShader);
 
     m_ColorPipeline = pipelineBuilder.build(device).get();
@@ -599,16 +602,16 @@ void Renderer_VX::InitPipelines(vk::RenderPass renderPass) {
 
     m_TexturePipeline = pipelineBuilder.build(device).get();
 
-    device.destroyShaderModule(clipShader);
-    device.destroyShaderModule(vertShader);
+    device.destroyShaderModule(clipVertShader);
+    device.destroyShaderModule(mainVertShader);
     device.destroyShaderModule(colorFragShader);
     device.destroyShaderModule(textureFragShader);
 }
 
 Rml::TextureHandle Renderer_VX::CreateTexture(vk::Buffer buffer,
                                               Rml::Vector2i dimensions) {
-    const auto device = m_Backend->GetDevice(this);
-    const auto allocator = m_Backend->GetAllocator(this);
+    const auto device = m_Context->GetDevice(this);
+    const auto allocator = m_Context->GetAllocator(this);
 
     auto t = std::make_unique<TextureResource>();
 
@@ -630,7 +633,7 @@ Rml::TextureHandle Renderer_VX::CreateTexture(vk::Buffer buffer,
                                   vk::ImageAspectFlagBits::bColor);
     t->m_ImageView = device.createImageView(imageViewInfo).get();
 
-    const auto commandBuffer = m_Backend->BeginTransfer(this);
+    const auto commandBuffer = m_Context->BeginTransfer(this);
 
     vx::ImageMemoryBarrierState imageMemoryBarrier(
         t->m_Image, vk::ImageAspectFlagBits::bColor);
@@ -653,7 +656,7 @@ Rml::TextureHandle Renderer_VX::CreateTexture(vk::Buffer buffer,
                               vk::AccessFlagBits2::bShaderRead);
     commandBuffer.cmdPipelineBarriers(imageMemoryBarrier);
 
-    m_Backend->EndTransfer(this);
+    m_Context->EndTransfer(this);
 
     return reinterpret_cast<Rml::TextureHandle>(t.release());
 }
