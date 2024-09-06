@@ -1,5 +1,6 @@
 #include "RmlUi_Renderer_VX.h"
 #include <RmlUi/Core/Core.h>
+#include <RmlUi/Core/DecorationTypes.h>
 #include <RmlUi/Core/FileInterface.h>
 #include <RmlUi/Core/Log.h>
 #include "RmlUi_VX/ShadersCompiledSPV.h"
@@ -65,6 +66,11 @@ struct TextureResource : ResourceBase {
     vma::Allocation m_Allocation;
 };
 
+struct ShaderResource : ResourceBase {
+    vk::Buffer m_Buffer;
+    vma::Allocation m_Allocation;
+};
+
 struct VsInput {
     Rml::Matrix4f transform;
     Rml::Vector2f translate;
@@ -72,16 +78,24 @@ struct VsInput {
 
 #define FIELD(s, m) offsetof(s, m), sizeof(s::m)
 
-struct Renderer_VX::MyDescriptorSet {
+struct Renderer_VX::TextureDescriptorSet {
     static constexpr vk::ShaderStageFlags Stages =
         vk::ShaderStageFlagBits::bFragment;
 
     VX_BINDING(0, vx::CombinedImageSamplerDescriptor, Stages) tex;
 };
 
+struct Renderer_VX::GradientDescriptorSet {
+    static constexpr vk::ShaderStageFlags Stages =
+        vk::ShaderStageFlagBits::bFragment;
+
+    VX_BINDING(0, vx::UniformBufferDescriptor, Stages) uniform;
+};
+
 struct Renderer_VX::FrameResources {
     boost::unordered_flat_set<Rml::CompiledGeometryHandle> m_Geometries;
     boost::unordered_flat_set<Rml::TextureHandle> m_Textures;
+    boost::unordered_flat_set<Rml::CompiledShaderHandle> m_Shaders;
 
     const GeometryResource* UseGeometry(Rml::CompiledGeometryHandle handle) {
         const auto p = reinterpret_cast<GeometryResource*>(handle);
@@ -94,6 +108,14 @@ struct Renderer_VX::FrameResources {
     const TextureResource* UseTexture(Rml::TextureHandle handle) {
         const auto p = reinterpret_cast<TextureResource*>(handle);
         if (m_Textures.insert(handle).second) {
+            ++p->m_RefCount;
+        }
+        return p;
+    }
+
+    const ShaderResource* UseShader(Rml::CompiledShaderHandle handle) {
+        const auto p = reinterpret_cast<ShaderResource*>(handle);
+        if (m_Shaders.insert(handle).second) {
             ++p->m_RefCount;
         }
         return p;
@@ -139,14 +161,23 @@ void Renderer_VX::Shutdown() {
     if (m_TexturePipeline) {
         device.destroyPipeline(m_TexturePipeline);
     }
+    if (m_GradientPipeline) {
+        device.destroyPipeline(m_GradientPipeline);
+    }
     if (m_BasicPipelineLayout) {
         device.destroyPipelineLayout(m_BasicPipelineLayout);
     }
     if (m_TexturePipelineLayout) {
         device.destroyPipelineLayout(m_TexturePipelineLayout);
     }
-    if (m_DescriptorSetLayout) {
-        device.destroyDescriptorSetLayout(m_DescriptorSetLayout);
+    if (m_GradientPipelineLayout) {
+        device.destroyPipelineLayout(m_GradientPipelineLayout);
+    }
+    if (m_TextureDescriptorSetLayout) {
+        device.destroyDescriptorSetLayout(m_TextureDescriptorSetLayout);
+    }
+    if (m_GradientDescriptorSetLayout) {
+        device.destroyDescriptorSetLayout(m_GradientDescriptorSetLayout);
     }
 }
 
@@ -247,7 +278,7 @@ void Renderer_VX::RenderGeometry(Rml::CompiledGeometryHandle handle,
         pipeline = m_TexturePipeline;
         pipelineLayout = m_TexturePipelineLayout;
         const auto t = frameResources.UseTexture(texture);
-        const vx::DescriptorSet<MyDescriptorSet> descriptorSet;
+        const vx::DescriptorSet<TextureDescriptorSet> descriptorSet;
         m_CommandBuffer.cmdPushDescriptorSetKHR(
             vk::PipelineBindPoint::eGraphics, pipelineLayout, 0,
             {descriptorSet->tex = vx::CombinedImageSamplerDescriptor(
@@ -466,11 +497,142 @@ void Renderer_VX::RenderToClipMask(Rml::ClipMaskOperation operation,
         vk::StencilFaceFlagBits::eFrontAndBack, m_StencilRef);
 }
 
+inline Rml::Colourf ConvertToColorf(Rml::ColourbPremultiplied c0) {
+    return {c0[0] / 255.f, c0[1] / 255.f, c0[2] / 255.f, c0[3] / 255.f};
+}
+
+struct GradientUniform {
+    static constexpr int MAX_NUM_STOPS = 16;
+    enum { LINEAR = 0, RADIAL = 1, CONIC = 2, REPEATING = 1 };
+
+    // one of the above definitions
+    int func;
+    // linear: starting point, radial: center, conic: center
+    int numStops;
+    alignas(8) Rml::Vector2f pos;
+    // linear: vector to ending point, radial: 2d curvature (inverse radius),
+    // conic: angled unit vector
+    alignas(8) Rml::Vector2f vec;
+    // normalized, 0 -> starting point, 1 -> ending point
+    float stopPositions[MAX_NUM_STOPS];
+    alignas(16) Rml::Colourf stopColors[MAX_NUM_STOPS];
+
+    void ApplyColorStopList(const Rml::Dictionary& parameters) {
+        const auto it = parameters.find("color_stop_list");
+        RMLUI_ASSERT(it != shader_parameters.end() &&
+                     it->second.GetType() == Rml::Variant::COLORSTOPLIST);
+        const auto& color_stop_list =
+            it->second.GetReference<Rml::ColorStopList>();
+        numStops = Rml::Math::Min((int)color_stop_list.size(), MAX_NUM_STOPS);
+        for (int i = 0; i != numStops; ++i) {
+            const auto& stop = color_stop_list[i];
+            RMLUI_ASSERT(stop.position.unit == Rml::Unit::NUMBER);
+            stopPositions[i] = stop.position.number;
+            stopColors[i] = ConvertToColorf(stop.color);
+        }
+    }
+
+    vk::DeviceSize GetUsedSize() const {
+        return offsetof(GradientUniform, stopColors) +
+               sizeof(Rml::Colourf) * numStops;
+    }
+};
+
+Rml::CompiledShaderHandle
+Renderer_VX::CompileShader(const Rml::String& name,
+                           const Rml::Dictionary& parameters) {
+    GradientUniform uniform;
+    if (name == "linear-gradient") {
+        uniform.func = GradientUniform::LINEAR << 1;
+        uniform.pos = Rml::Get(parameters, "p0", Rml::Vector2f(0.f));
+        uniform.vec =
+            Rml::Get(parameters, "p1", Rml::Vector2f(0.f)) - uniform.pos;
+    } else if (name == "radial-gradient") {
+        uniform.func = GradientUniform::RADIAL << 1;
+        uniform.pos = Rml::Get(parameters, "center", Rml::Vector2f(0.f));
+        uniform.vec = Rml::Vector2f(1.f) /
+                      Rml::Get(parameters, "radius", Rml::Vector2f(1.f));
+    } else if (name == "conic-gradient") {
+        uniform.func = GradientUniform::CONIC << 1;
+        uniform.pos = Rml::Get(parameters, "center", Rml::Vector2f(0.f));
+        const float angle = Rml::Get(parameters, "angle", 0.f);
+        uniform.vec = {Rml::Math::Cos(angle), Rml::Math::Sin(angle)};
+    } else {
+        Rml::Log::Message(Rml::Log::LT_WARNING, "Unsupported shader type '%s'.",
+                          name.c_str());
+        return {};
+    }
+    if (Rml::Get(parameters, "repeating", false))
+        uniform.func |= GradientUniform::REPEATING;
+    uniform.ApplyColorStopList(parameters);
+
+    const auto allocator = m_Context->GetAllocator(this);
+
+    auto s = std::make_unique<ShaderResource>();
+
+    const auto uniformSize = uniform.GetUsedSize();
+    vk::BufferCreateInfo bufferInfo;
+    bufferInfo.setSize(uniformSize);
+    bufferInfo.setUsage(vk::BufferUsageFlagBits::bUniformBuffer);
+    bufferInfo.setSharingMode(vk::SharingMode::eExclusive);
+
+    vma::AllocationCreateInfo allocationInfo;
+    allocationInfo.setFlags(
+        vma::AllocationCreateFlagBits::bMapped |
+        vma::AllocationCreateFlagBits::bHostAccessSequentialWrite);
+    allocationInfo.setUsage(vma::MemoryUsage::eAutoPreferDevice);
+
+    vma::AllocationInfo allocInfo;
+    s->m_Buffer = allocator
+                      .createBuffer(bufferInfo, allocationInfo,
+                                    &s->m_Allocation, &allocInfo)
+                      .get();
+
+    std::memcpy(allocInfo.getMappedData(), &uniform, uniformSize);
+
+    return reinterpret_cast<Rml::CompiledShaderHandle>(s.release());
+}
+
+void Renderer_VX::RenderShader(Rml::CompiledShaderHandle shader,
+                               Rml::CompiledGeometryHandle geometry,
+                               Rml::Vector2f translation,
+                               Rml::TextureHandle /*texture*/) {
+    auto& frameResources = m_FrameResources[m_FrameNumber];
+    const auto s = frameResources.UseShader(shader);
+    const auto g = frameResources.UseGeometry(geometry);
+
+    const vx::DescriptorSet<GradientDescriptorSet> descriptorSet;
+    m_CommandBuffer.cmdPushDescriptorSetKHR(
+        vk::PipelineBindPoint::eGraphics, m_GradientPipelineLayout, 0,
+        {descriptorSet->uniform =
+             vx::UniformBufferDescriptor(s->m_Buffer, 0, VK_WHOLE_SIZE)});
+    m_CommandBuffer.cmdBindPipeline(vk::PipelineBindPoint::eGraphics,
+                                    m_GradientPipeline);
+    m_CommandBuffer.cmdPushConstants(m_GradientPipelineLayout,
+                                     vk::ShaderStageFlagBits::bVertex,
+                                     FIELD(VsInput, translate), &translation);
+    g->Draw(m_CommandBuffer);
+}
+
+void Renderer_VX::ReleaseShader(Rml::CompiledShaderHandle shader) {
+    const auto s = reinterpret_cast<ShaderResource*>(shader);
+    if (--s->m_RefCount) {
+        return;
+    }
+    const auto allocator = m_Context->GetAllocator(this);
+    allocator.destroyBuffer(s->m_Buffer, s->m_Allocation);
+    delete s;
+}
+
 void Renderer_VX::InitPipelineLayouts() {
     const auto device = m_Context->GetDevice(this);
 
     check(device.createTypedDescriptorSetLayout(
-        &m_DescriptorSetLayout,
+        &m_TextureDescriptorSetLayout,
+        vk::DescriptorSetLayoutCreateFlagBits::bPushDescriptorKHR));
+
+    check(device.createTypedDescriptorSetLayout(
+        &m_GradientDescriptorSetLayout,
         vk::DescriptorSetLayoutCreateFlagBits::bPushDescriptorKHR));
 
     vk::PushConstantRange pushConstantRange;
@@ -486,9 +648,14 @@ void Renderer_VX::InitPipelineLayouts() {
         device.createPipelineLayout(pipelineLayoutInfo).get();
 
     pipelineLayoutInfo.setSetLayoutCount(1);
-    pipelineLayoutInfo.setSetLayouts(&m_DescriptorSetLayout);
+    pipelineLayoutInfo.setSetLayouts(&m_TextureDescriptorSetLayout);
 
     m_TexturePipelineLayout =
+        device.createPipelineLayout(pipelineLayoutInfo).get();
+
+    pipelineLayoutInfo.setSetLayouts(&m_GradientDescriptorSetLayout);
+
+    m_GradientPipelineLayout =
         device.createPipelineLayout(pipelineLayoutInfo).get();
 }
 
@@ -503,6 +670,8 @@ void Renderer_VX::InitPipelines(vk::RenderPass renderPass) {
         device.createShaderModule(shader_frag_color).get();
     const auto textureFragShader =
         device.createShaderModule(shader_frag_texture).get();
+    const auto gradientFragShader =
+        device.createShaderModule(shader_frag_gradient).get();
 
     vx::GraphicsPipelineBuilder pipelineBuilder;
     pipelineBuilder.setRenderPass(renderPass);
@@ -602,10 +771,15 @@ void Renderer_VX::InitPipelines(vk::RenderPass renderPass) {
 
     m_TexturePipeline = pipelineBuilder.build(device).get();
 
+    pipelineBuilder.setLayout(m_GradientPipelineLayout);
+    shaderStageInfos[1].setModule(gradientFragShader);
+    m_GradientPipeline = pipelineBuilder.build(device).get();
+
     device.destroyShaderModule(clipVertShader);
     device.destroyShaderModule(mainVertShader);
     device.destroyShaderModule(colorFragShader);
     device.destroyShaderModule(textureFragShader);
+    device.destroyShaderModule(gradientFragShader);
 }
 
 Rml::TextureHandle Renderer_VX::CreateTexture(vk::Buffer buffer,

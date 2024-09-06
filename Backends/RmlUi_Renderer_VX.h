@@ -65,8 +65,23 @@ struct Renderer_VX : Rml::RenderInterface {
                           Rml::CompiledGeometryHandle geometry,
                           Rml::Vector2f translation) override;
 
+    /// Called by RmlUi when it wants to compile a new shader.
+    Rml::CompiledShaderHandle
+    CompileShader(const Rml::String& name,
+                  const Rml::Dictionary& parameters) override;
+
+    /// Called by RmlUi when it wants to render geometry using the given shader.
+    void RenderShader(Rml::CompiledShaderHandle shader,
+                      Rml::CompiledGeometryHandle geometry,
+                      Rml::Vector2f translation,
+                      Rml::TextureHandle texture) override;
+
+    /// Called by RmlUi when it no longer needs a previously compiled shader.
+    void ReleaseShader(Rml::CompiledShaderHandle shader) override;
+
 private:
-    struct MyDescriptorSet;
+    struct TextureDescriptorSet;
+    struct GradientDescriptorSet;
     struct FrameResources;
 
     void InitPipelineLayouts();
@@ -77,12 +92,16 @@ private:
 
     const Context* m_Context = nullptr;
     std::unique_ptr<FrameResources[]> m_FrameResources;
-    vx::DescriptorSetLayout<MyDescriptorSet> m_DescriptorSetLayout;
+    vx::DescriptorSetLayout<TextureDescriptorSet> m_TextureDescriptorSetLayout;
+    vx::DescriptorSetLayout<GradientDescriptorSet>
+        m_GradientDescriptorSetLayout;
     vk::PipelineLayout m_BasicPipelineLayout;
     vk::PipelineLayout m_TexturePipelineLayout;
+    vk::PipelineLayout m_GradientPipelineLayout;
     vk::Pipeline m_ClipPipeline;
     vk::Pipeline m_ColorPipeline;
     vk::Pipeline m_TexturePipeline;
+    vk::Pipeline m_GradientPipeline;
     vk::Sampler m_Sampler;
     vx::CommandBuffer m_CommandBuffer;
     vk::Rect2D m_Scissor;

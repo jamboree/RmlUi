@@ -27,11 +27,14 @@ bool PhysicalDeviceInfo::HasExtension(std::string_view name) const noexcept {
 struct GfxContext_VX::DeviceFeatures : vk::PhysicalDeviceFeatures2 {
     vk::PhysicalDeviceSynchronization2Features m_Synchronization2;
     vk::PhysicalDeviceBufferDeviceAddressFeatures m_BufferDeviceAddress;
+    vk::PhysicalDeviceUniformBufferStandardLayoutFeatures
+        m_UniformBufferStandardLayout;
     // vk::PhysicalDeviceDynamicRenderingFeatures m_DynamicRendering;
 
     DeviceFeatures() noexcept {
         chain(m_Synchronization2);
         chain(m_BufferDeviceAddress);
+        chain(m_UniformBufferStandardLayout);
         // chain(m_DynamicRendering);
     }
 
@@ -44,6 +47,10 @@ struct GfxContext_VX::DeviceFeatures : vk::PhysicalDeviceFeatures2 {
         if (!supported.m_BufferDeviceAddress.getBufferDeviceAddress())
             return false;
         m_BufferDeviceAddress.setBufferDeviceAddress(true);
+        if (!supported.m_UniformBufferStandardLayout
+                 .getUniformBufferStandardLayout())
+            return false;
+        m_UniformBufferStandardLayout.setUniformBufferStandardLayout(true);
         // if (!supported.m_DynamicRendering.getDynamicRendering())
         //    return false;
         // m_DynamicRendering.setDynamicRendering(true);

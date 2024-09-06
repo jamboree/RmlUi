@@ -1,14 +1,16 @@
 #version 460
 
 #extension GL_ARB_separate_shader_objects : enable
+#extension GL_EXT_scalar_block_layout : require
 
+#define MAX_NUM_STOPS 16
 #define LINEAR 0
 #define RADIAL 1
 #define CONIC 2
 #define REPEATING 1
 #define PI 3.14159265
 
-layout(binding = 0) uniform FsInput {
+layout(std430, binding = 0) uniform GradientUniform {
     // one of the above definitions
     int func;
     // linear: starting point, radial: center, conic: center
@@ -16,9 +18,9 @@ layout(binding = 0) uniform FsInput {
     vec2 pos;
     // linear: vector to ending point, radial: 2d curvature (inverse radius), conic: angled unit vector
     vec2 vec;
-    vec4 stopColors[];
     // normalized, 0 -> starting point, 1 -> ending point
-    float stopPositions[];
+    float stopPositions[MAX_NUM_STOPS];
+    vec4 stopColors[MAX_NUM_STOPS];
 };
 
 layout(location = 0) in vec2 fragTexCoord;
@@ -26,11 +28,13 @@ layout(location = 1) in vec4 fragColor;
 
 layout(location = 0) out vec4 finalColor;
 
-vec4 mix_stop_colors(float t) {
+vec4 mixStopColors(float t) {
     vec4 color = stopColors[0];
+    float position = stopPositions[0];
 
     for (int i = 1; i < numStops; ++i) {
-        color = mix(color, stopColors[i], smoothstep(stopPositions[i - 1], stopPositions[i], t));
+        color = mix(color, stopColors[i], smoothstep(position, stopPositions[i], t));
+        position = stopPositions[i];
     }
 
     return color;
@@ -65,5 +69,5 @@ void main() {
         t = t0 + mod(t - t0, t1 - t0);
     }
 
-    finalColor = fragColor * mix_stop_colors(t);
+    finalColor = fragColor * mixStopColors(t);
 }
