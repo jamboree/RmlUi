@@ -229,6 +229,17 @@ static void GetItemSizing(FlexItem::Size& destination, const ComputedAxisSize& c
 	}
 }
 
+static float GetInnerUsedMainSize(const FlexItem& item)
+{
+	// Due to pixel snapping (rounding) of the outer size, `sum_edges` may be larger than it, so clamp the result to zero.
+	return Math::Max(item.used_main_size - item.main.sum_edges, 0.f);
+}
+
+static float GetInnerUsedCrossSize(const FlexItem& item)
+{
+	return Math::Max(item.used_cross_size - item.cross.sum_edges, 0.f);
+}
+
 void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector2f& flex_content_overflow_size, float& flex_baseline) const
 {
 	// The following procedure is based on the CSS flexible box layout algorithm.
@@ -355,6 +366,12 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
 			FormattingContext::FormatIndependent(flex_container_box, element, (format_box.GetSize().x >= 0 ? &format_box : nullptr),
 				FormattingContextType::Block);
 			item.inner_flex_base_size = element->GetBox().GetSize().y;
+
+			// Apply the automatic block size as minimum size (§4.5). Strictly speaking, we should also apply this to
+			// the other branches in column mode (and inline min-content size in row mode). However, the formatting step
+			// can be expensive, here we have already done that step so the value is readily accessible to us.
+			if (item.main.min_size == 0.f && !LayoutDetails::IsScrollContainer(computed.overflow_x(), computed.overflow_y()))
+				item.main.min_size = Math::Min(item.inner_flex_base_size, item.main.max_size);
 		}
 
 		// Calculate the hypothetical main size (clamped flex base size).
@@ -664,20 +681,31 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
 		}
 	}
 
+	auto CanSkipHypotheticalCrossSize = [=](const FlexItem& item) {
+		// If the following conditions are met, the hypothetical cross size will never be used. This allows us to skip a
+		// potentially slow step with content-based sizing.
+		const bool stretch_item = (item.align_self == Style::AlignSelf::Stretch);
+		const bool stretched = (stretch_item && item.cross.auto_size && !item.cross.auto_margin_a && !item.cross.auto_margin_b);
+		const bool single_line_definite_cross_size = (cross_available_size >= 0.f && flex_single_line);
+		return stretched && single_line_definite_cross_size;
+	};
+
 	// -- Determine cross size (§9.4) --
 	// First, determine the cross size of each item, format it if necessary.
 	for (FlexLine& line : container.lines)
 	{
 		for (FlexItem& item : line.items)
 		{
+			if (CanSkipHypotheticalCrossSize(item))
+				continue;
+
 			const Vector2f content_size = item.box.GetSize();
-			const float used_main_size_inner = item.used_main_size - item.main.sum_edges;
 
 			if (main_axis_horizontal)
 			{
 				if (content_size.y < 0.0f)
 				{
-					item.box.SetContent(Vector2f(used_main_size_inner, content_size.y));
+					item.box.SetContent(Vector2f(GetInnerUsedMainSize(item), content_size.y));
 					FormattingContext::FormatIndependent(flex_container_box, item.element, &item.box, FormattingContextType::Block);
 					item.hypothetical_cross_size = item.element->GetBox().GetSize().y + item.cross.sum_edges;
 				}
@@ -688,9 +716,9 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
 			}
 			else
 			{
-				if (content_size.x < 0.0f || item.cross.auto_size)
+				if (content_size.x < 0.0f)
 				{
-					item.box.SetContent(Vector2f(content_size.x, used_main_size_inner));
+					item.box.SetContent(Vector2f(content_size.x, GetInnerUsedMainSize(item)));
 					item.hypothetical_cross_size =
 						LayoutDetails::GetShrinkToFitWidth(item.element, flex_content_containing_block) + item.cross.sum_edges;
 				}
@@ -703,14 +731,17 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
 	}
 
 	// Determine cross size of each line.
-	if (cross_available_size >= 0.f && flex_single_line && container.lines.size() == 1)
+	if (cross_available_size >= 0.f && flex_single_line)
 	{
+		RMLUI_ASSERT(container.lines.size() == 1);
 		container.lines[0].cross_size = cross_available_size;
 	}
 	else
 	{
 		for (FlexLine& line : container.lines)
 		{
+			RMLUI_ASSERT(std::none_of(line.items.begin(), line.items.end(), [&](const auto& item) { return CanSkipHypotheticalCrossSize(item); }));
+
 			const float largest_hypothetical_cross_size =
 				std::max_element(line.items.begin(), line.items.end(), [](const FlexItem& a, const FlexItem& b) {
 					return a.hypothetical_cross_size < b.hypothetical_cross_size;
@@ -759,6 +790,7 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
 			}
 			else
 			{
+				RMLUI_ASSERT(!CanSkipHypotheticalCrossSize(item));
 				item.used_cross_size = item.hypothetical_cross_size;
 			}
 		}
@@ -946,7 +978,7 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
 	{
 		for (FlexItem& item : line.items)
 		{
-			const Vector2f item_size = MainCrossToVec2(item.used_main_size - item.main.sum_edges, item.used_cross_size - item.cross.sum_edges);
+			const Vector2f item_size = MainCrossToVec2(GetInnerUsedMainSize(item), GetInnerUsedCrossSize(item));
 			const Vector2f item_offset = MainCrossToVec2(item.main_offset, line.cross_offset + item.cross_offset);
 
 			item.box.SetContent(item_size);

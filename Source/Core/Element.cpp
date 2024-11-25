@@ -49,6 +49,7 @@
 #include "ElementBackgroundBorder.h"
 #include "ElementDefinition.h"
 #include "ElementEffects.h"
+#include "ElementMeta.h"
 #include "ElementStyle.h"
 #include "EventDispatcher.h"
 #include "EventSpecification.h"
@@ -90,20 +91,6 @@ static float GetScrollOffsetDelta(ScrollAlignment alignment, float begin_offset,
 	return 0.f;
 }
 
-// Meta objects for element collected in a single struct to reduce memory allocations
-struct ElementMeta {
-	ElementMeta(Element* el) : event_dispatcher(el), style(el), background_border(), effects(el), scroll(el), computed_values(el) {}
-	SmallUnorderedMap<EventId, EventListener*> attribute_event_listeners;
-	EventDispatcher event_dispatcher;
-	ElementStyle style;
-	ElementBackgroundBorder background_border;
-	ElementEffects effects;
-	ElementScroll scroll;
-	Style::ComputedValues computed_values;
-};
-
-static Pool<ElementMeta> element_meta_chunk_pool(200, true);
-
 Element::Element(const String& tag) :
 	local_stacking_context(false), local_stacking_context_forced(false), stacking_context_dirty(false), computed_values_are_default_initialized(true),
 	visible(true), offset_fixed(false), absolute_offset_dirty(true), dirty_definition(false), dirty_child_definitions(false), dirty_animation(false),
@@ -125,7 +112,7 @@ Element::Element(const String& tag) :
 
 	z_index = 0;
 
-	meta = element_meta_chunk_pool.AllocateAndConstruct(this);
+	meta = ElementMetaPool::element_meta_pool->pool.AllocateAndConstruct(this);
 	data_model = nullptr;
 }
 
@@ -148,7 +135,7 @@ Element::~Element()
 	children.clear();
 	num_non_dom_children = 0;
 
-	element_meta_chunk_pool.DestroyAndDeallocate(meta);
+	ElementMetaPool::element_meta_pool->pool.DestroyAndDeallocate(meta);
 }
 
 void Element::Update(float dp_ratio, Vector2f vp_dimensions)
@@ -640,9 +627,9 @@ float Element::ResolveNumericValue(NumericValue value, float base_value)
 
 Vector2f Element::GetContainingBlock()
 {
-	Vector2f containing_block(0, 0);
+	Vector2f containing_block;
 
-	if (offset_parent != nullptr)
+	if (offset_parent)
 	{
 		using namespace Style;
 		Position position_property = GetPosition();
@@ -651,11 +638,17 @@ Vector2f Element::GetContainingBlock()
 		if (position_property == Position::Static || position_property == Position::Relative)
 		{
 			containing_block = parent_box.GetSize();
+			containing_block.x -= meta->scroll.GetScrollbarSize(ElementScroll::VERTICAL);
+			containing_block.y -= meta->scroll.GetScrollbarSize(ElementScroll::HORIZONTAL);
 		}
 		else if (position_property == Position::Absolute || position_property == Position::Fixed)
 		{
 			containing_block = parent_box.GetSize(BoxArea::Padding);
 		}
+	}
+	else if (Context* context = GetContext())
+	{
+		containing_block = Vector2f(context->GetDimensions());
 	}
 
 	return containing_block;
@@ -1237,6 +1230,9 @@ void Element::ScrollIntoView(const ScrollIntoViewOptions options)
 			// Currently, only a single scrollable parent can be smooth scrolled at a time, so any other parents must be instant scrolled.
 			scroll_behavior = ScrollBehavior::Instant;
 		}
+
+		if ((scrollable_box_x || scrollable_box_y) && options.parentage == ScrollParentage::Closest)
+			break;
 	}
 }
 
@@ -2938,12 +2934,17 @@ void Element::ClampScrollOffset()
 		scroll_offset = new_scroll_offset;
 		DirtyAbsoluteOffset();
 	}
+
+	// At this point the scrollbars have been resolved, both in terms of size and visibility. Update their properties
+	// now so that any visibility changes in particular are reflected immediately on the next render. Otherwise we risk
+	// that the scrollbars renders a frame late, since changes to scrollbars can happen during layouting.
+	meta->scroll.UpdateProperties();
 }
 
 void Element::ClampScrollOffsetRecursive()
 {
 	ClampScrollOffset();
-	const int num_children = GetNumChildren(true);
+	const int num_children = GetNumChildren();
 	for (int i = 0; i < num_children; ++i)
 		GetChild(i)->ClampScrollOffsetRecursive();
 }
