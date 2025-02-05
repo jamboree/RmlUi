@@ -35,6 +35,7 @@
 #include <RmlUi/Core/MeshUtilities.h>
 #include <RmlUi/Core/Platform.h>
 #include <RmlUi/Core/SystemInterface.h>
+#include <algorithm>
 #include <string.h>
 
 #if defined(RMLUI_PLATFORM_WIN32) && !defined(__MINGW32__)
@@ -57,7 +58,9 @@
 #endif
 
 // Determines the anti-aliasing quality when creating layers. Enables better-looking visuals, especially when transforms are applied.
-static constexpr int NUM_MSAA_SAMPLES = 2;
+#ifndef RMLUI_NUM_MSAA_SAMPLES
+	#define RMLUI_NUM_MSAA_SAMPLES 2
+#endif
 
 #define MAX_NUM_STOPS 16
 #define BLUR_SIZE 7
@@ -802,10 +805,12 @@ RenderInterface_GL3::~RenderInterface_GL3()
 	}
 }
 
-void RenderInterface_GL3::SetViewport(int width, int height)
+void RenderInterface_GL3::SetViewport(int width, int height, int offset_x, int offset_y)
 {
 	viewport_width = Rml::Math::Max(width, 1);
 	viewport_height = Rml::Math::Max(height, 1);
+	viewport_offset_x = offset_x;
+	viewport_offset_y = offset_y;
 	projection = Rml::Matrix4f::ProjectOrtho(0, (float)viewport_width, (float)viewport_height, 0, -10000, 10000);
 }
 
@@ -906,6 +911,7 @@ void RenderInterface_GL3::EndFrame()
 
 	// Draw to backbuffer
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+	glViewport(viewport_offset_x, viewport_offset_y, viewport_width, viewport_height);
 
 	// Assuming we have an opaque background, we can just write to it with the premultiplied alpha blend mode and we'll get the correct result.
 	// Instead, if we had a transparent destination that didn't use premultiplied alpha, we would need to perform a manual un-premultiplication step.
@@ -1269,6 +1275,8 @@ Rml::TextureHandle RenderInterface_GL3::LoadTexture(Rml::Vector2i& texture_dimen
 
 Rml::TextureHandle RenderInterface_GL3::GenerateTexture(Rml::Span<const Rml::byte> source_data, Rml::Vector2i source_dimensions)
 {
+	RMLUI_ASSERT(source_data.data() && source_data.size() == size_t(source_dimensions.x * source_dimensions.y * 4));
+
 	GLuint texture_id = 0;
 	glGenTextures(1, &texture_id);
 	if (texture_id == 0)
@@ -2058,7 +2066,8 @@ Rml::LayerHandle RenderInterface_GL3::RenderLayerStack::PushLayer()
 		GLuint shared_depth_stencil = (fb_layers.empty() ? 0 : fb_layers.front().depth_stencil_buffer);
 
 		fb_layers.push_back(Gfx::FramebufferData{});
-		Gfx::CreateFramebuffer(fb_layers.back(), width, height, NUM_MSAA_SAMPLES, Gfx::FramebufferAttachment::DepthStencil, shared_depth_stencil);
+		Gfx::CreateFramebuffer(fb_layers.back(), width, height, RMLUI_NUM_MSAA_SAMPLES, Gfx::FramebufferAttachment::DepthStencil,
+			shared_depth_stencil);
 	}
 
 	layers_size += 1;
@@ -2134,6 +2143,16 @@ const Gfx::FramebufferData& RenderInterface_GL3::RenderLayerStack::EnsureFramebu
 	if (!fb.framebuffer)
 		Gfx::CreateFramebuffer(fb, width, height, 0, Gfx::FramebufferAttachment::None, 0);
 	return fb;
+}
+
+const Rml::Matrix4f& RenderInterface_GL3::GetTransform() const
+{
+	return transform;
+}
+
+void RenderInterface_GL3::ResetProgram()
+{
+	UseProgram(ProgramId::None);
 }
 
 bool RmlGL3::Initialize(Rml::String* out_message)
