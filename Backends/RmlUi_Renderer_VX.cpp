@@ -519,7 +519,7 @@ struct GradientUniform {
 
     void ApplyColorStopList(const Rml::Dictionary& parameters) {
         const auto it = parameters.find("color_stop_list");
-        RMLUI_ASSERT(it != shader_parameters.end() &&
+        RMLUI_ASSERT(it != parameters.end() &&
                      it->second.GetType() == Rml::Variant::COLORSTOPLIST);
         const auto& color_stop_list =
             it->second.GetReference<Rml::ColorStopList>();

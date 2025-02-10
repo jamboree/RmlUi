@@ -170,7 +170,7 @@ void GfxContext_VX::BeginFrame(vk::Extent2D extent) {
     const auto& syncObject = m_SyncObjects[m_FrameNumber];
     check(
         m_Device.waitForFences(1, &syncObject.m_RenderFence, true, UINT64_MAX));
-    // m_Renderer.ResetFrame(m_FrameNumber);
+    m_Renderer.ResetFrame(m_FrameNumber);
     m_Allocator.setCurrentFrameIndex(m_FrameNumber);
     if (auto ret = m_Device.acquireNextImageKHR(m_Swapchain, UINT64_MAX,
                                                 syncObject.m_AcquireSemaphore);
