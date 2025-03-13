@@ -699,7 +699,7 @@ void Renderer_VX::InitPipelines(vk::RenderPass renderPass) {
     dynamicStates[2] = vk::DynamicState::eStencilOp;
     pipelineBuilder.m_dynamicStateInfo.setDynamicStateCount(3);
 
-    pipelineBuilder.enableStencilTest();
+    pipelineBuilder.enableStencilTest(true);
     vk::StencilOpState stencilOp;
     stencilOp.setCompareMask(~0u);
     stencilOp.setReference(1);
@@ -744,7 +744,7 @@ void Renderer_VX::InitPipelines(vk::RenderPass renderPass) {
     pipelineBuilder.setColorWriteMask(
         vk::ColorComponentFlagBits::bR | vk::ColorComponentFlagBits::bG |
         vk::ColorComponentFlagBits::bB | vk::ColorComponentFlagBits::bA);
-    pipelineBuilder.enableBlend();
+    pipelineBuilder.enableBlend(true);
     pipelineBuilder.setColorBlend(vk::BlendOp::eAdd, vk::BlendFactor::eOne,
                                   vk::BlendFactor::eOneMinusSrcAlpha);
     pipelineBuilder.setAlphaBlend(vk::BlendOp::eAdd, vk::BlendFactor::eOne,
