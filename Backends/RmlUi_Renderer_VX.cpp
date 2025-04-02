@@ -745,10 +745,8 @@ void Renderer_VX::InitPipelines(vk::RenderPass renderPass) {
         vk::ColorComponentFlagBits::bR | vk::ColorComponentFlagBits::bG |
         vk::ColorComponentFlagBits::bB | vk::ColorComponentFlagBits::bA);
     pipelineBuilder.enableBlend(true);
-    pipelineBuilder.setColorBlend(vk::BlendOp::eAdd, vk::BlendFactor::eOne,
-                                  vk::BlendFactor::eOneMinusSrcAlpha);
-    pipelineBuilder.setAlphaBlend(vk::BlendOp::eAdd, vk::BlendFactor::eOne,
-                                  vk::BlendFactor::eOneMinusSrcAlpha);
+    pipelineBuilder.setBlend(vk::BlendOp::eAdd, vk::BlendFactor::eOne,
+                             vk::BlendFactor::eOneMinusSrcAlpha);
 
     vertexAttributeDescriptions[1].setLocation(1);
     vertexAttributeDescriptions[1].setBinding(0);
@@ -802,11 +800,6 @@ Rml::TextureHandle Renderer_VX::CreateTexture(vk::Buffer buffer,
         allocator.createImage(imageInfo, allocationInfo, &t->m_Allocation)
             .get();
 
-    const auto imageViewInfo =
-        vx::imageView2DCreateInfo(t->m_Image, vk::Format::eR8G8B8A8Unorm,
-                                  vk::ImageAspectFlagBits::bColor);
-    t->m_ImageView = device.createImageView(imageViewInfo).get();
-
     const auto commandBuffer = m_Context->BeginTransfer(this);
 
     vx::ImageMemoryBarrierState imageMemoryBarrier(
@@ -819,7 +812,7 @@ Rml::TextureHandle Renderer_VX::CreateTexture(vk::Buffer buffer,
 
     vk::BufferImageCopy bufferImageCopy;
     bufferImageCopy.setImageSubresource(
-        vx::singleSubresourceLayers(vk::ImageAspectFlagBits::bColor));
+        vx::subresourceLayers(vk::ImageAspectFlagBits::bColor, 1));
     bufferImageCopy.setImageExtent(vx::toExtent3D(extent));
     commandBuffer.cmdCopyBufferToImage(buffer, t->m_Image,
                                        vk::ImageLayout::eTransferDstOptimal, 1,
@@ -831,6 +824,11 @@ Rml::TextureHandle Renderer_VX::CreateTexture(vk::Buffer buffer,
     commandBuffer.cmdPipelineBarriers(imageMemoryBarrier);
 
     m_Context->EndTransfer(this);
+
+    const auto imageViewInfo = vx::imageViewCreateInfo(
+        vk::ImageViewType::e2D, t->m_Image, imageInfo.getFormat(),
+        vk::ImageAspectFlagBits::bColor);
+    t->m_ImageView = device.createImageView(imageViewInfo).get();
 
     return reinterpret_cast<Rml::TextureHandle>(t.release());
 }

@@ -619,8 +619,9 @@ void GfxContext_VX::BuildDepthStencilImage() {
             .createImage(depthImageInfo, allocationInfo,
                          &m_DepthStencilImage.m_Allocation)
             .get();
-    const auto imageViewInfo = vx::imageView2DCreateInfo(
-        m_DepthStencilImage.m_Image, m_DepthStencilImageFormat,
+    const auto imageViewInfo = vx::imageViewCreateInfo(
+        vk::ImageViewType::e2D, m_DepthStencilImage.m_Image,
+        m_DepthStencilImageFormat,
         vk::ImageAspectFlagBits::bDepth | vk::ImageAspectFlagBits::bStencil);
     m_DepthStencilImage.m_ImageView =
         m_Device.createImageView(imageViewInfo).get();
@@ -644,8 +645,8 @@ void GfxContext_VX::BuildFrameResources() {
     framebufferInfo.setAttachments(attachments);
 
     for (unsigned i = 0; i != swapchainImages.count; ++i) {
-        const auto imageViewInfo = vx::imageView2DCreateInfo(
-            swapchainImages[i], m_SwapchainImageFormat,
+        const auto imageViewInfo = vx::imageViewCreateInfo(
+            vk::ImageViewType::e2D, swapchainImages[i], m_SwapchainImageFormat,
             vk::ImageAspectFlagBits::bColor);
         auto& frameResource = m_FrameResources[i];
         frameResource.m_ImageView =
