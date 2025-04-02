@@ -25,6 +25,7 @@ Fixes several situations with single pixel gaps and overlaps:
 - Gap of 1px between border or backgrounds of neighboring elements.
 - Overlap of 1px between border or backgrounds of neighboring elements.
 - Table cell backgrounds overlaps the table border by 1px.
+- Gap between nested elements in a flex container.
 - Clipping area offset by 1px compared to the border area.
 
 ![Single pixel gap fix examples - before and after comparisons](https://github.com/user-attachments/assets/f1b29382-4686-4fea-a4dc-ea9628669b80)
@@ -97,6 +98,7 @@ The font face will be inherited from the element it is being applied to. However
 
 ### Font engine
 
+- Add the ability to select a font face from a font collection, using its face index passed to `Rml::LoadFontFace`. #720 (thanks @leduyquang753)
 - Fix rare placement of glyphs appearing below the baseline in some fonts, by using the bitmap bearing instead of the glyph metrics.
 
 ### RML Parsing
@@ -106,6 +108,7 @@ The font face will be inherited from the element it is being applied to. However
 ### Rendering
 
 - Fix incorrect clipping when using multiple contexts of different dimensions. #677 #680 (thanks @s1sw)
+- Defer texture loading until the texture becomes visible.
 
 ### Backends
 
@@ -122,6 +125,10 @@ The font face will be inherited from the element it is being applied to. However
 - `SDL_GL2`-specific improvements:
   - GLEW is no longer required, and no longer linked to.
   - Use OpenGL directly instead of the SDL renderer, just like the `SDL_GL3` renderer.
+- OpenGL 3 renderer-specific improvements:
+  - Added the ability to set an offset with the call to `SetViewport()`. #724 (thanks @viseztrance)
+  - Added `RMLUI_NUM_MSAA_SAMPLES` as a customizable macro for the number of MSAA samples to use in RmlUi framebuffers.
+  - Added utility functions `GetTransform()` and `ResetProgram()` to more easily enable client projects to render with their own shaders.
 
 ### Plugins
 
@@ -144,6 +151,7 @@ The font face will be inherited from the element it is being applied to. However
 ### Building
 
 - Remove `OpenGL::GL` dependency for GL3 backends. #684 (thanks @std-microblock)
+- Fix dependency check signature in RmlUiConfig causing failure to find dependencies. #721 #722 (thanks @mpersano) 
 - Fix missing header in the GL3 renderer, causing a compilation error on Visual Studio 17.12.
 - Fix unit tests and missing sample data when building with Emscripten.
 - Libraries and archives will now be placed in the top-level binary directory, unless overridden by users or parent projects. This matches the existing runtime output directory.
@@ -154,6 +162,7 @@ The font face will be inherited from the element it is being applied to. However
 
 ### Breaking changes
 
+- Layouts may see 1px shifts in various places due to the improvements to prevent single pixel gaps.
 - The target of the `<handle>` element will no longer move outside its containing block by default, see above for how to override this behavior.
 - Changed the signature of `MeshUtilities::GenerateBackground` and  `MeshUtilities::GenerateBackgroundBorder`.
   - They now take the new `RenderBox` class as input. The `Element::GetRenderBox` method can be used to construct it.
