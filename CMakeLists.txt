@@ -3,7 +3,7 @@
 cmake_minimum_required(VERSION 3.10...3.27)
 
 project("RmlUi"
-	VERSION "6.1"
+	VERSION "6.2"
 	DESCRIPTION "C++ user interface library based on the HTML and CSS standards"
 	LANGUAGES "C" "CXX"
 )
