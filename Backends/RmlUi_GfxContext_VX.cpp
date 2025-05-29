@@ -27,62 +27,31 @@ bool PhysicalDeviceInfo::HasExtension(std::string_view name) const noexcept {
 struct GfxContext_VX::DeviceFeatures
     : vx::StructureChain<
           vk::PhysicalDeviceFeatures2,
+          vk::PhysicalDeviceTimelineSemaphoreFeatures,
           vk::PhysicalDeviceSynchronization2Features,
+          vk::PhysicalDeviceDynamicRenderingFeatures,
           vk::PhysicalDeviceBufferDeviceAddressFeatures,
           vk::PhysicalDeviceUniformBufferStandardLayoutFeatures> {
-    // vk::PhysicalDeviceDynamicRenderingFeatures m_DynamicRendering;
-
     bool Init(vk::PhysicalDevice physicalDevice) {
         DeviceFeatures supported;
         physicalDevice.getFeatures2(&supported);
+        if (!supported.timelineSemaphore)
+            return false;
+        timelineSemaphore = true;
         if (!supported.synchronization2)
             return false;
         synchronization2 = true;
+        if (!supported.dynamicRendering)
+            return false;
+        dynamicRendering = true;
         if (!supported.bufferDeviceAddress)
             return false;
         bufferDeviceAddress = true;
         if (!supported.uniformBufferStandardLayout)
             return false;
         uniformBufferStandardLayout = true;
-        // if (!supported.dynamicRendering)
-        //     return false;
-        // dynamicRendering = true;
         return true;
     }
-};
-
-struct GfxContext_VX::RendererContext {
-    static GfxContext_VX* GetContextPtr(void* p) {
-        return reinterpret_cast<GfxContext_VX*>(
-            static_cast<uint8_t*>(p) - offsetof(GfxContext_VX, m_Renderer));
-    }
-
-    static vx::Device GetDeviceImpl(Renderer_VX* p) {
-        return GetContextPtr(p)->m_Device;
-    }
-
-    static vma::Allocator GetAllocatorImpl(Renderer_VX* p) {
-        return GetContextPtr(p)->m_Allocator;
-    }
-
-    static vk::Extent2D GetFrameExtentImpl(Renderer_VX* p) {
-        return GetContextPtr(p)->m_FrameExtent;
-    }
-
-    static vx::CommandBuffer BeginTransferImpl(Renderer_VX* p) {
-        return GetContextPtr(p)->BeginTransfer();
-    }
-
-    static void EndTransferImpl(Renderer_VX* p) {
-        GetContextPtr(p)->EndTransfer();
-    }
-
-    static constexpr Renderer_VX::Context g_Impl{
-        .GetDevice = GetDeviceImpl,
-        .GetAllocator = GetAllocatorImpl,
-        .GetFrameExtent = GetFrameExtentImpl,
-        .BeginTransfer = BeginTransferImpl,
-        .EndTransfer = EndTransferImpl};
 };
 
 void GfxContext_VX::DestroyFrameResources() {
@@ -96,16 +65,6 @@ void GfxContext_VX::DestroyFrameResources() {
     }
 }
 
-void GfxContext_VX::DestroyDepthStencilImage() {
-    if (m_DepthStencilImage.m_ImageView) {
-        m_Device.destroyImageView(m_DepthStencilImage.m_ImageView);
-    }
-    if (m_DepthStencilImage.m_Image) {
-        m_Allocator.destroyImage(m_DepthStencilImage.m_Image,
-                                 m_DepthStencilImage.m_Allocation);
-    }
-}
-
 void GfxContext_VX::Destroy() {
     for (uint32_t i = 0; i != InFlightCount; ++i) {
         m_Renderer.ResetFrame(i);
@@ -113,12 +72,12 @@ void GfxContext_VX::Destroy() {
     m_Renderer.Shutdown();
 
     DestroyFrameResources();
-    DestroyDepthStencilImage();
+    DestroyImageAttachment(m_DepthStencilImage);
     if (m_Swapchain) {
         m_Device.destroySwapchainKHR(m_Swapchain);
     }
-    if (m_ImmediateFence) {
-        m_Device.destroyFence(m_ImmediateFence);
+    if (m_TempSemaphore) {
+        m_Device.destroySemaphore(m_TempSemaphore);
     }
     for (auto& syncObject : m_SyncObjects) {
         if (syncObject.m_AcquireSemaphore) {
@@ -136,6 +95,9 @@ void GfxContext_VX::Destroy() {
     }
     if (m_DescriptorPool) {
         m_Device.destroyDescriptorPool(m_DescriptorPool);
+    }
+    if (m_TempCommandPool) {
+        m_Device.destroyCommandPool(m_TempCommandPool);
     }
     if (m_CommandPool) {
         m_Device.destroyCommandPool(m_CommandPool);
@@ -253,7 +215,7 @@ void GfxContext_VX::RecreateRenderTarget(vk::Extent2D extent) {
     m_FrameNumber = 0;
     (void)m_Device.waitIdle();
     DestroyFrameResources();
-    DestroyDepthStencilImage();
+    DestroyImageAttachment(m_DepthStencilImage);
     m_FrameResources.count = 0;
     vk::SurfaceCapabilitiesKHR surfaceCapabilities;
     check(m_PhysicalDevice.getSurfaceCapabilitiesKHR(m_Surface,
@@ -324,8 +286,7 @@ bool GfxContext_VX::InitContext() {
     InitRenderPass();
     InitSyncObjects();
 
-    if (!m_Renderer.Init(RendererContext::g_Impl, m_RenderPass,
-                         InFlightCount)) {
+    if (!m_Renderer.Init(*this, m_RenderPass)) {
         Rml::Log::Message(Rml::Log::LT_ERROR,
                           "Failed to initialize Vulkan render interface");
         return false;
@@ -441,6 +402,10 @@ void GfxContext_VX::InitDevice(PhysicalDeviceInfo& physicalDeviceInfo,
     poolInfo.setFlags(vk::CommandPoolCreateFlagBits::bResetCommandBuffer);
 
     m_CommandPool = m_Device.createCommandPool(poolInfo).get();
+
+    poolInfo.setFlags(vk::CommandPoolCreateFlagBits::bTransient |
+                      vk::CommandPoolCreateFlagBits::bResetCommandBuffer);
+    m_TempCommandPool = m_Device.createCommandPool(poolInfo).get();
 
     vk::CommandBufferAllocateInfo allocInfo;
     allocInfo.setCommandPool(m_CommandPool);
@@ -575,7 +540,7 @@ void GfxContext_VX::InitSyncObjects() {
             m_Device.createSemaphore(semaphoreInfo).get();
         syncObject.m_RenderFence = m_Device.createFence(fenceInfo).get();
     }
-    m_ImmediateFence = m_Device.createFence(fenceInfo).get();
+    m_TempSemaphore = m_Device.createTimelineSemaphore(1).get();
 }
 
 void GfxContext_VX::BuildSwapchain(
@@ -690,16 +655,22 @@ uint32_t GfxContext_VX::FindQueueFamilyIndex(
     return index;
 }
 
-vx::CommandBuffer GfxContext_VX::BeginTransfer() {
-    const auto commandBuffer = m_CommandBuffers[InFlightCount];
+vx::CommandBuffer GfxContext_VX::BeginTemp() {
+    vk::CommandBufferAllocateInfo allocInfo;
+    allocInfo.setCommandPool(m_TempCommandPool);
+    allocInfo.setLevel(vk::CommandBufferLevel::ePrimary);
+    allocInfo.setCommandBufferCount(1);
+
+    vk::CommandBuffer commandBuffer;
+    check(m_Device.allocateCommandBuffers(allocInfo, &commandBuffer));
+
     vk::CommandBufferBeginInfo beginInfo;
     beginInfo.setFlags(vk::CommandBufferUsageFlagBits::bOneTimeSubmit);
     check(commandBuffer.begin(beginInfo));
     return commandBuffer;
 }
 
-void GfxContext_VX::EndTransfer() {
-    const auto commandBuffer = m_CommandBuffers[InFlightCount];
+void GfxContext_VX::EndTemp(vk::CommandBuffer commandBuffer) {
     check(commandBuffer.end());
 
     vk::CommandBufferSubmitInfo bufferSubmitInfo;
@@ -709,7 +680,22 @@ void GfxContext_VX::EndTransfer() {
     submitInfo.setCommandBufferInfoCount(1);
     submitInfo.setCommandBufferInfos(&bufferSubmitInfo);
 
-    check(m_Device.resetFences(1, &m_ImmediateFence));
-    check(m_Queue.submit2(1, &submitInfo, m_ImmediateFence));
-    check(m_Device.waitForFences(1, &m_ImmediateFence, true, UINT64_MAX));
+    const auto waitValue =
+        m_Device.getSemaphoreCounterValue(m_TempSemaphore).get() + 1;
+    vk::SemaphoreSubmitInfo signalSemaphoreInfo;
+    signalSemaphoreInfo.setSemaphore(m_TempSemaphore);
+    signalSemaphoreInfo.setStageMask(vk::PipelineStageFlagBits2::bAllCommands);
+    signalSemaphoreInfo.setValue(waitValue);
+    submitInfo.setSignalSemaphoreInfoCount(1);
+    submitInfo.setSignalSemaphoreInfos(&signalSemaphoreInfo);
+
+    check(m_Queue.submit2(1, &submitInfo));
+
+    vk::SemaphoreWaitInfo waitInfo;
+    waitInfo.setSemaphoreCount(1);
+    waitInfo.setSemaphores(&m_TempSemaphore);
+    waitInfo.setValues(&waitValue);
+    check(m_Device.waitSemaphores(waitInfo, UINT64_MAX));
+
+    m_Device.freeCommandBuffers(m_TempCommandPool, 1, &commandBuffer);
 }

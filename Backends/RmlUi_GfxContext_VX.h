@@ -23,13 +23,13 @@ struct FrameResource {
     vk::Framebuffer m_Framebuffer;
 };
 
-struct ImageResource {
+struct ImageAttachment {
     vk::Image m_Image;
     vk::ImageView m_ImageView;
     vma::Allocation m_Allocation;
 };
 
-struct GfxContext_VX {
+struct GfxContext_VX : RenderContext_VX {
     static constexpr uint32_t VulkanApiVersion = VK_API_VERSION_1_3;
     static constexpr uint32_t InFlightCount = 2;
     static constexpr const char* const RequiredDeviceExtensions[] = {
@@ -37,7 +37,6 @@ struct GfxContext_VX {
         VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME};
 
     struct DeviceFeatures;
-    struct RendererContext;
 
     vx::Instance m_Instance;
 #ifndef NDEBUG
@@ -49,14 +48,15 @@ struct GfxContext_VX {
     vk::Queue m_Queue;
     vma::Allocator m_Allocator;
     vk::CommandPool m_CommandPool;
-    vk::CommandBuffer m_CommandBuffers[InFlightCount + 1];
+    vk::CommandPool m_TempCommandPool;
+    vk::CommandBuffer m_CommandBuffers[InFlightCount];
     vk::DescriptorPool m_DescriptorPool;
     vk::RenderPass m_RenderPass;
     SyncObject m_SyncObjects[InFlightCount];
-    vk::Fence m_ImmediateFence;
+    vk::Semaphore m_TempSemaphore;
     vk::SwapchainKHR m_Swapchain;
     vx::List<FrameResource> m_FrameResources;
-    ImageResource m_DepthStencilImage;
+    ImageAttachment m_DepthStencilImage;
 
     vk::Format m_SwapchainImageFormat = vk::Format::eB8G8R8A8Unorm;
     vk::Format m_DepthStencilImageFormat = vk::Format::eD24UnormS8Uint;
@@ -70,7 +70,14 @@ struct GfxContext_VX {
 
     void DestroyFrameResources();
 
-    void DestroyDepthStencilImage();
+    void DestroyImageAttachment(const ImageAttachment& res) {
+        if (res.m_ImageView) {
+            m_Device.destroyImageView(res.m_ImageView);
+        }
+        if (res.m_Image) {
+            m_Allocator.destroyImage(res.m_Image, res.m_Allocation);
+        }
+    }
 
     void Destroy();
 
@@ -112,7 +119,13 @@ struct GfxContext_VX {
         const vx::List<vk::QueueFamilyProperties>& queueFamilyProperties,
         vk::QueueFlags flags, vk::SurfaceKHR surface = {}) const;
 
-    vx::CommandBuffer BeginTransfer();
+    vx::Device GetDevice() override { return m_Device; }
 
-    void EndTransfer();
+    vma::Allocator GetAllocator() override { return m_Allocator; }
+
+    vk::Extent2D GetFrameExtent() override { return m_FrameExtent; }
+
+    vx::CommandBuffer BeginTemp() override;
+
+    void EndTemp(vk::CommandBuffer commandBuffer) override;
 };

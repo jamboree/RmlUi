@@ -3,20 +3,19 @@
 #include <RmlUi/Core/RenderInterface.h>
 #include <vx.hpp>
 
-struct Renderer_VX : Rml::RenderInterface {
-    struct Context {
-        vx::Device (&GetDevice)(Renderer_VX*);
-        vma::Allocator (&GetAllocator)(Renderer_VX*);
-        vk::Extent2D (&GetFrameExtent)(Renderer_VX*);
-        vx::CommandBuffer (&BeginTransfer)(Renderer_VX*);
-        void (&EndTransfer)(Renderer_VX*);
-    };
+struct RenderContext_VX {
+    virtual vx::Device GetDevice() = 0;
+    virtual vma::Allocator GetAllocator() = 0;
+    virtual vk::Extent2D GetFrameExtent() = 0;
+    virtual vx::CommandBuffer BeginTemp() = 0;
+    virtual void EndTemp(vk::CommandBuffer commandBuffer) = 0;
+};
 
+struct Renderer_VX : Rml::RenderInterface {
     Renderer_VX();
     ~Renderer_VX();
 
-    bool Init(const Context& context, vk::RenderPass renderPass,
-              uint32_t frameCount);
+    bool Init(RenderContext_VX& context, vk::RenderPass renderPass);
     void Shutdown();
 
     void BeginFrame(vx::CommandBuffer commandBuffer, uint32_t frame);
@@ -82,7 +81,78 @@ struct Renderer_VX : Rml::RenderInterface {
 private:
     struct TextureDescriptorSet;
     struct GradientDescriptorSet;
-    struct FrameResources;
+    struct GeometryResource;
+    struct TextureResource;
+    struct ShaderResource;
+
+    template<class T>
+    struct ResourcePool {
+        std::pair<uintptr_t, T*> Allocate() {
+            uintptr_t index;
+            if (m_FreeHead < m_Count) {
+                index = m_FreeHead;
+                m_FreeHead = m_Elems[index].m_NextFree;
+            } else {
+                index = m_Count;
+                New();
+                m_FreeHead = m_Count;
+            }
+            m_Uses[index] = 1u;
+            return {index, new (m_Elems + index) T()};
+        }
+
+        const T* Use(uintptr_t index, uint8_t useFlag) const noexcept {
+            m_Uses[index] |= useFlag;
+            return &m_Elems[index].m_Resource;
+        }
+
+        void Release(Renderer_VX& self, uintptr_t index) noexcept {
+            if (!(m_Uses[index] &= ~1u)) {
+                Free(self, index);
+            }
+        }
+
+        void ReleaseAllUse(Renderer_VX& self, uint8_t useFlag) {
+            for (uintptr_t index = 0; index != m_Count; ++index) {
+                auto& use = m_Uses[index];
+                if (use & useFlag) {
+                    if (!(use &= ~useFlag)) {
+                        Free(self, index);
+                    }
+                }
+            }
+        }
+
+    private:
+        union Elem {
+            T m_Resource;
+            uintptr_t m_NextFree;
+        };
+
+        void New() {
+            if (m_Count == m_Capacity) {
+                m_Capacity += (m_Capacity / 2) | 16;
+                m_Uses = static_cast<uint8_t*>(
+                    std::realloc(m_Uses, sizeof(uint8_t) * m_Capacity));
+                m_Elems = static_cast<Elem*>(
+                    std::realloc(m_Elems, sizeof(Elem) * m_Capacity));
+            }
+            ++m_Count;
+        }
+
+        void Free(Renderer_VX& self, uintptr_t index) {
+            auto& elem = m_Elems[index];
+            self.Destroy(elem.m_Resource);
+            elem.m_NextFree = m_FreeHead;
+            m_FreeHead = index;
+        }
+
+        size_t m_Count = 0;
+        size_t m_Capacity = 0;
+        uintptr_t m_FreeHead = 0;
+        uint8_t* m_Uses = nullptr;
+        Elem* m_Elems = nullptr;
+    };
 
     void InitPipelineLayouts();
     void InitPipelines(vk::RenderPass renderPass);
@@ -90,8 +160,14 @@ private:
     Rml::TextureHandle CreateTexture(vk::Buffer buffer,
                                      Rml::Vector2i dimensions);
 
-    const Context* m_Context = nullptr;
-    std::unique_ptr<FrameResources[]> m_FrameResources;
+    void Destroy(GeometryResource& g);
+    void Destroy(TextureResource& t);
+    void Destroy(ShaderResource& s);
+
+    RenderContext_VX* m_Context = nullptr;
+    ResourcePool<GeometryResource> m_GeometryResources;
+    ResourcePool<TextureResource> m_TextureResources;
+    ResourcePool<ShaderResource> m_ShaderResources;
     vx::DescriptorSetLayout<TextureDescriptorSet> m_TextureDescriptorSetLayout;
     vx::DescriptorSetLayout<GradientDescriptorSet>
         m_GradientDescriptorSetLayout;
