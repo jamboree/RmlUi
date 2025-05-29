@@ -4,7 +4,7 @@
  * For the latest information, see http://github.com/mikke89/RmlUi
  *
  * Copyright (c) 2008-2010 CodePoint Ltd, Shift Technology Ltd
- * Copyright (c) 2019-2023 The RmlUi Team, and contributors
+ * Copyright (c) 2019- The RmlUi Team, and contributors
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -26,30 +26,49 @@
  *
  */
 
-#ifndef RMLUI_CORE_MESH_H
-#define RMLUI_CORE_MESH_H
+#ifndef RMLUI_CORE_DECORATORSVG_H
+#define RMLUI_CORE_DECORATORSVG_H
 
-#include "Header.h"
-#include "Texture.h"
-#include "Vertex.h"
+#include "../../Include/RmlUi/Core/Decorator.h"
 
 namespace Rml {
+namespace SVG {
 
-struct RMLUICORE_API Mesh {
-	Vector<Vertex> vertices;
-	Vector<int> indices;
+	struct SVGData;
 
-	explicit operator bool() const { return !indices.empty(); }
-	friend bool operator==(const Mesh& lhs, const Mesh& rhs) { return lhs.vertices == rhs.vertices && lhs.indices == rhs.indices; }
-	friend bool operator!=(const Mesh& lhs, const Mesh& rhs) { return !(lhs == rhs); }
-};
+	class DecoratorSVG : public Decorator {
+	public:
+		DecoratorSVG(const String& source, const bool crop_to_content);
+		virtual ~DecoratorSVG();
 
-struct RMLUICORE_API TexturedMesh {
-	Mesh mesh;
-	Texture texture;
-};
+		DecoratorDataHandle GenerateElementData(Element* element, BoxArea paint_area) const override;
+		void ReleaseElementData(DecoratorDataHandle element_data) const override;
 
-using TexturedMeshList = Vector<TexturedMesh>;
+		void RenderElement(Element* element, DecoratorDataHandle element_data) const override;
 
+	private:
+		struct Data {
+			SharedPtr<SVGData> handle;
+			BoxArea paint_area;
+		};
+
+		String source_path;
+		bool crop_to_content;
+	};
+
+	class DecoratorSVGInstancer : public DecoratorInstancer {
+	public:
+		DecoratorSVGInstancer();
+		~DecoratorSVGInstancer();
+
+		SharedPtr<Decorator> InstanceDecorator(const String&, const PropertyDictionary& properties, const DecoratorInstancerInterface&) override;
+
+	private:
+		PropertyId source_id;
+		PropertyId crop_id;
+	};
+
+} // namespace SVG
 } // namespace Rml
+
 #endif
