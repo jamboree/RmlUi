@@ -90,7 +90,8 @@ struct Renderer_VX::GradientDescriptorSet {
 Renderer_VX::Renderer_VX() = default;
 Renderer_VX::~Renderer_VX() = default;
 
-bool Renderer_VX::Init(RenderContext_VX& context, vk::RenderPass renderPass) {
+bool Renderer_VX::Init(RenderContext_VX& context,
+                       vk::PipelineRenderingCreateInfo& renderingInfo) {
     m_Context = &context;
 
     const auto device = m_Context->GetDevice();
@@ -104,7 +105,7 @@ bool Renderer_VX::Init(RenderContext_VX& context, vk::RenderPass renderPass) {
     m_Sampler = device.createSampler(samplerInfo).get();
 
     InitPipelineLayouts();
-    InitPipelines(renderPass);
+    InitPipelines(renderingInfo);
 
     return true;
 }
@@ -617,7 +618,8 @@ void Renderer_VX::InitPipelineLayouts() {
         device.createPipelineLayout(pipelineLayoutInfo).get();
 }
 
-void Renderer_VX::InitPipelines(vk::RenderPass renderPass) {
+void Renderer_VX::InitPipelines(
+    vk::PipelineRenderingCreateInfo& renderingInfo) {
     const auto device = m_Context->GetDevice();
 
     const auto clipVertShader =
@@ -632,7 +634,7 @@ void Renderer_VX::InitPipelines(vk::RenderPass renderPass) {
         device.createShaderModule(shader_frag_gradient).get();
 
     vx::GraphicsPipelineBuilder pipelineBuilder;
-    pipelineBuilder.setRenderPass(renderPass);
+    pipelineBuilder.attach(renderingInfo);
     pipelineBuilder.setTopology(vk::PrimitiveTopology::eTriangleList);
     pipelineBuilder.setPolygonMode(vk::PolygonMode::eFill);
     pipelineBuilder.setFrontFace(vk::FrontFace::eClockwise);

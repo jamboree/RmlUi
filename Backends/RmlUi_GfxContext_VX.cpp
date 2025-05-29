@@ -56,9 +56,6 @@ struct GfxContext_VX::DeviceFeatures
 
 void GfxContext_VX::DestroyFrameResources() {
     for (auto& frameResource : m_FrameResources) {
-        if (frameResource.m_Framebuffer) {
-            m_Device.destroyFramebuffer(frameResource.m_Framebuffer);
-        }
         if (frameResource.m_ImageView) {
             m_Device.destroyImageView(frameResource.m_ImageView);
         }
@@ -89,9 +86,6 @@ void GfxContext_VX::Destroy() {
         if (syncObject.m_RenderFence) {
             m_Device.destroyFence(syncObject.m_RenderFence);
         }
-    }
-    if (m_RenderPass) {
-        m_Device.destroyRenderPass(m_RenderPass);
     }
     if (m_DescriptorPool) {
         m_Device.destroyDescriptorPool(m_DescriptorPool);
@@ -142,18 +136,60 @@ void GfxContext_VX::BeginFrame(vk::Extent2D extent) {
     vk::CommandBufferBeginInfo beginInfo;
     beginInfo.setFlags(vk::CommandBufferUsageFlagBits::bOneTimeSubmit);
     check(commandBuffer.begin(beginInfo));
-    vk::RenderPassBeginInfo renderPassBeginInfo;
-    renderPassBeginInfo.setRenderPass(m_RenderPass);
-    renderPassBeginInfo.setFramebuffer(
-        m_FrameResources[m_ImageIndex].m_Framebuffer);
-    renderPassBeginInfo.setRenderArea({{0, 0}, m_FrameExtent});
-    const vk::ClearValue clearValues[2] = {
-        {.color = vk::ClearColorValue()},
-        {.depthStencil = vk::ClearDepthStencilValue{1.0f, 0}}};
-    renderPassBeginInfo.setClearValueCount(uint32_t(std::size(clearValues)));
-    renderPassBeginInfo.setClearValues(clearValues);
-    commandBuffer.cmdBeginRenderPass(renderPassBeginInfo,
-                                     vk::SubpassContents::eInline);
+
+    enum { ColorImage, DepthStencilImage, ImageCount };
+    vx::ImageMemoryBarrierState imageMemoryBarriers[ImageCount] = {
+        {m_FrameResources[m_ImageIndex].m_Image,
+         vx::allSubresourceRange(vk::ImageAspectFlagBits::bColor)},
+        {m_DepthStencilImage.m_Image,
+         vx::allSubresourceRange(vk::ImageAspectFlagBits::bDepth |
+                                 vk::ImageAspectFlagBits::bStencil)},
+    };
+
+    imageMemoryBarriers[ColorImage].update(
+        vk::ImageLayout::eAttachmentOptimal,
+        vk::PipelineStageFlagBits2::bColorAttachmentOutput,
+        vk::AccessFlagBits2::bColorAttachmentWrite);
+    imageMemoryBarriers[DepthStencilImage].setSrcStageAccess(
+        vk::PipelineStageFlagBits2::bLateFragmentTests,
+        vk::AccessFlagBits2::bDepthStencilAttachmentWrite);
+    imageMemoryBarriers[DepthStencilImage].setNewLayout(
+        vk::ImageLayout::eAttachmentOptimal);
+    imageMemoryBarriers[DepthStencilImage].setDstStageAccess(
+        vk::PipelineStageFlagBits2::bEarlyFragmentTests |
+            vk::PipelineStageFlagBits2::bLateFragmentTests,
+        vk::AccessFlagBits2::bDepthStencilAttachmentRead |
+            vk::AccessFlagBits2::bDepthStencilAttachmentWrite);
+    commandBuffer.cmdPipelineBarriers(rawIns(imageMemoryBarriers));
+
+    vk::RenderingAttachmentInfo colorAttachmentInfo;
+    colorAttachmentInfo.setImageLayout(
+        imageMemoryBarriers[ColorImage].getNewLayout());
+    colorAttachmentInfo.setLoadOp(vk::AttachmentLoadOp::eClear);
+    colorAttachmentInfo.setStoreOp(vk::AttachmentStoreOp::eStore);
+    colorAttachmentInfo.setImageView(
+        m_FrameResources[m_ImageIndex].m_ImageView);
+    colorAttachmentInfo.setClearValue({.color = vk::ClearColorValue()});
+
+    vk::RenderingAttachmentInfo depthStencilAttachmentInfo;
+    depthStencilAttachmentInfo.setImageLayout(
+        imageMemoryBarriers[DepthStencilImage].getNewLayout());
+    depthStencilAttachmentInfo.setLoadOp(vk::AttachmentLoadOp::eClear);
+    depthStencilAttachmentInfo.setStoreOp(vk::AttachmentStoreOp::eDontCare);
+    depthStencilAttachmentInfo.setImageView(m_DepthStencilImage.m_ImageView);
+    depthStencilAttachmentInfo.setClearValue(
+        {.depthStencil = vk::ClearDepthStencilValue{1.0f, 0}});
+
+    vk::RenderingInfo renderingInfo;
+    renderingInfo.setRenderArea({{0, 0}, m_FrameExtent});
+    renderingInfo.setLayerCount(1);
+    renderingInfo.setColorAttachmentCount(1);
+    renderingInfo.setColorAttachments(&colorAttachmentInfo);
+    renderingInfo.setDepthAttachment(&depthStencilAttachmentInfo);
+    renderingInfo.setStencilAttachment(&depthStencilAttachmentInfo);
+
+    commandBuffer.cmdBeginRendering(renderingInfo);
+
     vk::Viewport viewport;
     viewport.setWidth(float(m_FrameExtent.getWidth()));
     viewport.setHeight(float(m_FrameExtent.getHeight()));
@@ -168,7 +204,21 @@ void GfxContext_VX::EndFrame() {
     const auto commandBuffer = m_CommandBuffers[m_FrameNumber];
 
     m_Renderer.EndFrame();
-    commandBuffer.cmdEndRenderPass();
+    commandBuffer.cmdEndRendering();
+    {
+        vx::ImageMemoryBarrierState imageMemoryBarrier{
+            m_FrameResources[m_ImageIndex].m_Image,
+            vx::allSubresourceRange(vk::ImageAspectFlagBits::bColor)};
+        imageMemoryBarrier.setOldLayout(vk::ImageLayout::eAttachmentOptimal);
+        imageMemoryBarrier.setSrcStageAccess(
+            vk::PipelineStageFlagBits2::bColorAttachmentOutput,
+            vk::AccessFlagBits2::bColorAttachmentWrite);
+        imageMemoryBarrier.setNewLayout(vk::ImageLayout::ePresentSrcKHR);
+        imageMemoryBarrier.setDstStageAccess(
+            vk::PipelineStageFlagBits2::bAllCommands,
+            vk::AccessFlagBits2::eNone);
+        commandBuffer.cmdPipelineBarriers(imageMemoryBarrier);
+    }
     check(commandBuffer.end());
 
     vk::CommandBufferSubmitInfo bufferSubmitInfo;
@@ -283,10 +333,15 @@ bool GfxContext_VX::InitContext() {
         return false;
     }
     InitDevice(deviceInfo, features);
-    InitRenderPass();
     InitSyncObjects();
 
-    if (!m_Renderer.Init(*this, m_RenderPass)) {
+    vk::PipelineRenderingCreateInfo renderingInfo;
+    renderingInfo.setColorAttachmentCount(1);
+    renderingInfo.setColorAttachmentFormats(&m_SwapchainImageFormat);
+    renderingInfo.setDepthAttachmentFormat(m_DepthStencilImageFormat);
+    renderingInfo.setStencilAttachmentFormat(m_DepthStencilImageFormat);
+
+    if (!m_Renderer.Init(*this, renderingInfo)) {
         Rml::Log::Message(Rml::Log::LT_ERROR,
                           "Failed to initialize Vulkan render interface");
         return false;
@@ -428,107 +483,6 @@ void GfxContext_VX::InitDevice(PhysicalDeviceInfo& physicalDeviceInfo,
     m_DescriptorPool = m_Device.createDescriptorPool(descriptorPoolInfo).get();
 }
 
-void GfxContext_VX::InitRenderPass() {
-    vk::AttachmentDescription2 attachmentDescriptions[2];
-    {
-        auto& attachmentDescription = attachmentDescriptions[0];
-        attachmentDescription.setFormat(m_SwapchainImageFormat);
-        attachmentDescription.setSamples(vk::SampleCountFlagBits::b1);
-        attachmentDescription.setLoadOp(vk::AttachmentLoadOp::eClear);
-        attachmentDescription.setStoreOp(vk::AttachmentStoreOp::eStore);
-        attachmentDescription.setStencilLoadOp(vk::AttachmentLoadOp::eDontCare);
-        attachmentDescription.setStencilStoreOp(
-            vk::AttachmentStoreOp::eDontCare);
-        attachmentDescription.setInitialLayout(vk::ImageLayout::eUndefined);
-        attachmentDescription.setFinalLayout(vk::ImageLayout::ePresentSrcKHR);
-    }
-    {
-        auto& attachmentDescription = attachmentDescriptions[1];
-        attachmentDescription.setFormat(m_DepthStencilImageFormat);
-        attachmentDescription.setSamples(vk::SampleCountFlagBits::b1);
-        attachmentDescription.setLoadOp(vk::AttachmentLoadOp::eClear);
-        attachmentDescription.setStoreOp(vk::AttachmentStoreOp::eDontCare);
-        attachmentDescription.setStencilLoadOp(vk::AttachmentLoadOp::eClear);
-        attachmentDescription.setStencilStoreOp(
-            vk::AttachmentStoreOp::eDontCare);
-        attachmentDescription.setInitialLayout(vk::ImageLayout::eUndefined);
-        attachmentDescription.setFinalLayout(
-            vk::ImageLayout::eAttachmentOptimal);
-    }
-
-    vk::SubpassDescription2 subpass;
-    subpass.setPipelineBindPoint(vk::PipelineBindPoint::eGraphics);
-
-    vk::AttachmentReference2 colorAttachmentReference;
-    colorAttachmentReference.setAttachment(0);
-    colorAttachmentReference.setLayout(
-        vk::ImageLayout::eColorAttachmentOptimal);
-    colorAttachmentReference.setAspectMask(vk::ImageAspectFlagBits::bColor);
-    subpass.setColorAttachmentCount(1);
-    subpass.setColorAttachments(&colorAttachmentReference);
-
-    vk::AttachmentReference2 depthStencilAttachmentReference;
-    depthStencilAttachmentReference.setAttachment(1);
-    depthStencilAttachmentReference.setLayout(
-        vk::ImageLayout::eDepthStencilAttachmentOptimal);
-    depthStencilAttachmentReference.setAspectMask(
-        vk::ImageAspectFlagBits::bDepth | vk::ImageAspectFlagBits::bStencil);
-    subpass.setDepthStencilAttachment(&depthStencilAttachmentReference);
-
-    // See
-    // https://docs.vulkan.org/guide/latest/synchronization_examples.html#_swapchain_image_acquire_and_present
-    vk::SubpassDependency2 subpassDependencies[3];
-    {
-        auto& subpassDependency = subpassDependencies[0];
-        subpassDependency.setSrcSubpass(VK_SUBPASS_EXTERNAL);
-        subpassDependency.setSrcStageMask(
-            vk::PipelineStageFlagBits::bColorAttachmentOutput);
-        subpassDependency.setSrcAccessMask(vk::AccessFlagBits::eNone);
-        subpassDependency.setDstSubpass(0);
-        subpassDependency.setDstStageMask(
-            vk::PipelineStageFlagBits::bColorAttachmentOutput);
-        subpassDependency.setDstAccessMask(
-            vk::AccessFlagBits::bColorAttachmentWrite);
-    }
-    {
-        auto& subpassDependency = subpassDependencies[1];
-        subpassDependency.setSrcSubpass(VK_SUBPASS_EXTERNAL);
-        subpassDependency.setSrcStageMask(
-            vk::PipelineStageFlagBits::bLateFragmentTests);
-        subpassDependency.setSrcAccessMask(
-            vk::AccessFlagBits::bDepthStencilAttachmentWrite);
-        subpassDependency.setDstSubpass(0);
-        subpassDependency.setDstStageMask(
-            vk::PipelineStageFlagBits::bEarlyFragmentTests |
-            vk::PipelineStageFlagBits::bLateFragmentTests);
-        subpassDependency.setDstAccessMask(
-            vk::AccessFlagBits::bDepthStencilAttachmentWrite);
-    }
-    {
-        auto& subpassDependency = subpassDependencies[2];
-        subpassDependency.setSrcSubpass(0);
-        subpassDependency.setSrcStageMask(
-            vk::PipelineStageFlagBits::bColorAttachmentOutput);
-        subpassDependency.setSrcAccessMask(
-            vk::AccessFlagBits::bColorAttachmentWrite);
-        subpassDependency.setDstSubpass(VK_SUBPASS_EXTERNAL);
-        subpassDependency.setDstStageMask(
-            vk::PipelineStageFlagBits::bColorAttachmentOutput);
-        subpassDependency.setDstAccessMask(vk::AccessFlagBits::eNone);
-    }
-
-    vk::RenderPassCreateInfo2 renderPassInfo;
-    renderPassInfo.setSubpassCount(1);
-    renderPassInfo.setSubpasses(&subpass);
-    renderPassInfo.setAttachmentCount(
-        uint32_t(std::size(attachmentDescriptions)));
-    renderPassInfo.setAttachments(attachmentDescriptions);
-    renderPassInfo.setDependencyCount(uint32_t(std::size(subpassDependencies)));
-    renderPassInfo.setDependencies(subpassDependencies);
-
-    m_RenderPass = m_Device.createRenderPass2(renderPassInfo).get();
-}
-
 void GfxContext_VX::InitSyncObjects() {
     vk::SemaphoreCreateInfo semaphoreInfo;
     vk::FenceCreateInfo fenceInfo;
@@ -592,27 +546,14 @@ void GfxContext_VX::BuildFrameResources() {
     m_FrameResources.count = swapchainImages.count;
     m_FrameResources.prepare();
 
-    vk::FramebufferCreateInfo framebufferInfo;
-    framebufferInfo.setRenderPass(m_RenderPass);
-    framebufferInfo.setWidth(m_FrameExtent.getWidth());
-    framebufferInfo.setHeight(m_FrameExtent.getHeight());
-    framebufferInfo.setLayers(1);
-
-    vk::ImageView attachments[2];
-    attachments[1] = m_DepthStencilImage.m_ImageView;
-    framebufferInfo.setAttachmentCount(uint32_t(std::size(attachments)));
-    framebufferInfo.setAttachments(attachments);
-
     for (unsigned i = 0; i != swapchainImages.count; ++i) {
-        const auto imageViewInfo = vx::imageViewCreateInfo(
-            vk::ImageViewType::e2D, swapchainImages[i], m_SwapchainImageFormat,
-            vk::ImageAspectFlagBits::bColor);
         auto& frameResource = m_FrameResources[i];
+        frameResource.m_Image = swapchainImages[i];
+        const auto imageViewInfo = vx::imageViewCreateInfo(
+            vk::ImageViewType::e2D, frameResource.m_Image,
+            m_SwapchainImageFormat, vk::ImageAspectFlagBits::bColor);
         frameResource.m_ImageView =
             m_Device.createImageView(imageViewInfo).get();
-        attachments[0] = frameResource.m_ImageView;
-        frameResource.m_Framebuffer =
-            m_Device.createFramebuffer(framebufferInfo).get();
     }
 }
 

@@ -15,7 +15,8 @@ struct Renderer_VX : Rml::RenderInterface {
     Renderer_VX();
     ~Renderer_VX();
 
-    bool Init(RenderContext_VX& context, vk::RenderPass renderPass);
+    bool Init(RenderContext_VX& context,
+              vk::PipelineRenderingCreateInfo& renderingInfo);
     void Shutdown();
 
     void BeginFrame(vx::CommandBuffer commandBuffer, uint32_t frame);
@@ -155,7 +156,7 @@ private:
     };
 
     void InitPipelineLayouts();
-    void InitPipelines(vk::RenderPass renderPass);
+    void InitPipelines(vk::PipelineRenderingCreateInfo& renderingInfo);
 
     Rml::TextureHandle CreateTexture(vk::Buffer buffer,
                                      Rml::Vector2i dimensions);

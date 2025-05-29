@@ -19,8 +19,8 @@ struct SyncObject {
 };
 
 struct FrameResource {
+    vk::Image m_Image;
     vk::ImageView m_ImageView;
-    vk::Framebuffer m_Framebuffer;
 };
 
 struct ImageAttachment {
@@ -49,9 +49,8 @@ struct GfxContext_VX : RenderContext_VX {
     vma::Allocator m_Allocator;
     vk::CommandPool m_CommandPool;
     vk::CommandPool m_TempCommandPool;
-    vk::CommandBuffer m_CommandBuffers[InFlightCount];
+    vx::CommandBuffer m_CommandBuffers[InFlightCount];
     vk::DescriptorPool m_DescriptorPool;
-    vk::RenderPass m_RenderPass;
     SyncObject m_SyncObjects[InFlightCount];
     vk::Semaphore m_TempSemaphore;
     vk::SwapchainKHR m_Swapchain;
@@ -101,8 +100,6 @@ struct GfxContext_VX : RenderContext_VX {
 
     void InitDevice(PhysicalDeviceInfo& physicalDeviceInfo,
                     vk::PhysicalDeviceFeatures2& features);
-
-    void InitRenderPass();
 
     void InitSyncObjects();
 
