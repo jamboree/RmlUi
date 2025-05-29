@@ -24,36 +24,29 @@ bool PhysicalDeviceInfo::HasExtension(std::string_view name) const noexcept {
     return it != m_ExtensionProperties.end() && it->getExtensionName() == name;
 }
 
-struct GfxContext_VX::DeviceFeatures : vk::PhysicalDeviceFeatures2 {
-    vk::PhysicalDeviceSynchronization2Features m_Synchronization2;
-    vk::PhysicalDeviceBufferDeviceAddressFeatures m_BufferDeviceAddress;
-    vk::PhysicalDeviceUniformBufferStandardLayoutFeatures
-        m_UniformBufferStandardLayout;
+struct GfxContext_VX::DeviceFeatures
+    : vx::StructureChain<
+          vk::PhysicalDeviceFeatures2,
+          vk::PhysicalDeviceSynchronization2Features,
+          vk::PhysicalDeviceBufferDeviceAddressFeatures,
+          vk::PhysicalDeviceUniformBufferStandardLayoutFeatures> {
     // vk::PhysicalDeviceDynamicRenderingFeatures m_DynamicRendering;
-
-    DeviceFeatures() noexcept {
-        chain(m_Synchronization2);
-        chain(m_BufferDeviceAddress);
-        chain(m_UniformBufferStandardLayout);
-        // chain(m_DynamicRendering);
-    }
 
     bool Init(vk::PhysicalDevice physicalDevice) {
         DeviceFeatures supported;
         physicalDevice.getFeatures2(&supported);
-        if (!supported.m_Synchronization2.getSynchronization2())
+        if (!supported.synchronization2)
             return false;
-        m_Synchronization2.setSynchronization2(true);
-        if (!supported.m_BufferDeviceAddress.getBufferDeviceAddress())
+        synchronization2 = true;
+        if (!supported.bufferDeviceAddress)
             return false;
-        m_BufferDeviceAddress.setBufferDeviceAddress(true);
-        if (!supported.m_UniformBufferStandardLayout
-                 .getUniformBufferStandardLayout())
+        bufferDeviceAddress = true;
+        if (!supported.uniformBufferStandardLayout)
             return false;
-        m_UniformBufferStandardLayout.setUniformBufferStandardLayout(true);
-        // if (!supported.m_DynamicRendering.getDynamicRendering())
-        //    return false;
-        // m_DynamicRendering.setDynamicRendering(true);
+        uniformBufferStandardLayout = true;
+        // if (!supported.dynamicRendering)
+        //     return false;
+        // dynamicRendering = true;
         return true;
     }
 };
@@ -306,7 +299,7 @@ void GfxContext_VX::InitInstance(std::vector<const char*>& extensions) {
                               pCallbackData->pMessage);
             return false;
         });
-    instInfo.chain(debugInfo);
+    instInfo.attach(debugInfo);
 #endif
 
     instInfo.setEnabledExtensionCount(uint32_t(extensions.size()));
@@ -427,9 +420,9 @@ void GfxContext_VX::InitDevice(PhysicalDeviceInfo& physicalDeviceInfo,
     deviceInfo.setQueueCreateInfos(&queueInfo);
     deviceInfo.setEnabledExtensionCount(uint32_t(extensions.size()));
     deviceInfo.setEnabledExtensionNames(extensions.data());
+    deviceInfo.attachHead(features);
 
-    m_Device =
-        m_PhysicalDevice.createDevice(deviceInfo.chainHead(features)).get();
+    m_Device = m_PhysicalDevice.createDevice(deviceInfo).get();
     volkLoadDevice(m_Device.handle);
     m_Queue = m_Device.getQueue(m_QueueFamilyIndex, 0);
 
@@ -443,7 +436,8 @@ void GfxContext_VX::InitDevice(PhysicalDeviceInfo& physicalDeviceInfo,
 
     m_Allocator = vma::createAllocator(allocatorInfo).get();
 
-    vk::CommandPoolCreateInfo poolInfo{m_QueueFamilyIndex};
+    vk::CommandPoolCreateInfo poolInfo;
+    poolInfo.setQueueFamilyIndex(m_QueueFamilyIndex);
     poolInfo.setFlags(vk::CommandPoolCreateFlagBits::bResetCommandBuffer);
 
     m_CommandPool = m_Device.createCommandPool(poolInfo).get();

@@ -182,6 +182,7 @@ target_compile_features(rmlui_backend_GLFW_VX INTERFACE cxx_std_20)
 target_include_directories(rmlui_backend_GLFW_VX
     INTERFACE
         "D:/lib/vx"
+		"D:/lib/vklite/include"
 )
 
 add_library(rmlui_backend_Win32_VX INTERFACE)
@@ -201,6 +202,7 @@ target_compile_definitions(rmlui_backend_Win32_VX INTERFACE VK_USE_PLATFORM_WIN3
 target_include_directories(rmlui_backend_Win32_VX
     INTERFACE
         "D:/lib/vx"
+		"D:/lib/vklite/include"
 )
 
 add_library(rmlui_backend_BackwardCompatible_GLFW_GL2 INTERFACE)

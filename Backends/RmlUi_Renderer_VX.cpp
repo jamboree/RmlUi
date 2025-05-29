@@ -681,44 +681,42 @@ void Renderer_VX::InitPipelines(vk::RenderPass renderPass) {
     pipelineBuilder.setCullMode(vk::CullModeFlagBits::eNone);
 
     vk::PipelineShaderStageCreateInfo shaderStageInfos[2];
-    pipelineBuilder.m_pipelineInfo.setStages(shaderStageInfos);
+    pipelineBuilder.setStages(shaderStageInfos);
 
     vk::DynamicState dynamicStates[4];
-    pipelineBuilder.m_dynamicStateInfo.setDynamicStates(dynamicStates);
+    pipelineBuilder.setDynamicStates(dynamicStates);
 
     vk::VertexInputAttributeDescription vertexAttributeDescriptions[3];
-    pipelineBuilder.m_vertexInputStateInfo.setVertexAttributeDescriptions(
-        vertexAttributeDescriptions);
+    pipelineBuilder.setVertexAttributeDescriptions(vertexAttributeDescriptions);
 
     shaderStageInfos[0] = vx::makePipelineShaderStageCreateInfo(
         vk::ShaderStageFlagBits::bVertex, {});
-    pipelineBuilder.m_pipelineInfo.setStageCount(1);
+    pipelineBuilder.setStageCount(1);
 
     dynamicStates[0] = vk::DynamicState::eViewport;
     dynamicStates[1] = vk::DynamicState::eScissor;
     dynamicStates[2] = vk::DynamicState::eStencilOp;
-    pipelineBuilder.m_dynamicStateInfo.setDynamicStateCount(3);
+    pipelineBuilder.setDynamicStateCount(3);
 
-    pipelineBuilder.enableStencilTest(true);
+    pipelineBuilder.setStencilTestEnable(true);
     vk::StencilOpState stencilOp;
     stencilOp.setCompareMask(~0u);
     stencilOp.setReference(1);
     stencilOp.setWriteMask(~0u);
-    pipelineBuilder.setFrontStencilOp(stencilOp);
-    pipelineBuilder.setBackStencilOp(stencilOp);
+    pipelineBuilder.setStencilOpState(stencilOp);
 
     vk::VertexInputBindingDescription vertexBindingDescriptions[1];
     vertexBindingDescriptions[0].setBinding(0);
     vertexBindingDescriptions[0].setStride(sizeof(Rml::Vertex));
     vertexBindingDescriptions[0].setInputRate(vk::VertexInputRate::eVertex);
+    pipelineBuilder.setVertexBindingDescriptionCount(1);
     pipelineBuilder.setVertexBindingDescriptions(vertexBindingDescriptions);
 
     vertexAttributeDescriptions[0].setLocation(0);
     vertexAttributeDescriptions[0].setBinding(0);
     vertexAttributeDescriptions[0].setFormat(vk::Format::eR32G32Sfloat);
     vertexAttributeDescriptions[0].setOffset(offsetof(Rml::Vertex, position));
-    pipelineBuilder.m_vertexInputStateInfo.setVertexAttributeDescriptionCount(
-        1);
+    pipelineBuilder.setVertexAttributeDescriptionCount(1);
 
     pipelineBuilder.setLayout(m_BasicPipelineLayout);
     shaderStageInfos[0].setModule(clipVertShader);
@@ -727,24 +725,23 @@ void Renderer_VX::InitPipelines(vk::RenderPass renderPass) {
 
     shaderStageInfos[1] = vx::makePipelineShaderStageCreateInfo(
         vk::ShaderStageFlagBits::bFragment, {});
-    pipelineBuilder.m_pipelineInfo.setStageCount(2);
+    pipelineBuilder.setStageCount(2);
 
     dynamicStates[2] = vk::DynamicState::eStencilTestEnable;
     dynamicStates[3] = vk::DynamicState::eStencilReference;
-    pipelineBuilder.m_dynamicStateInfo.setDynamicStateCount(4);
+    pipelineBuilder.setDynamicStateCount(4);
 
     stencilOp.setCompareOp(vk::CompareOp::eEqual);
     stencilOp.setWriteMask(0);
     stencilOp.setFailOp(vk::StencilOp::eKeep);
     stencilOp.setPassOp(vk::StencilOp::eKeep);
     stencilOp.setDepthFailOp(vk::StencilOp::eKeep);
-    pipelineBuilder.setFrontStencilOp(stencilOp);
-    pipelineBuilder.setBackStencilOp(stencilOp);
+    pipelineBuilder.setStencilOpState(stencilOp);
 
     pipelineBuilder.setColorWriteMask(
         vk::ColorComponentFlagBits::bR | vk::ColorComponentFlagBits::bG |
         vk::ColorComponentFlagBits::bB | vk::ColorComponentFlagBits::bA);
-    pipelineBuilder.enableBlend(true);
+    pipelineBuilder.setBlendEnable(true);
     pipelineBuilder.setBlend(vk::BlendOp::eAdd, vk::BlendFactor::eOne,
                              vk::BlendFactor::eOneMinusSrcAlpha);
 
@@ -756,8 +753,7 @@ void Renderer_VX::InitPipelines(vk::RenderPass renderPass) {
     vertexAttributeDescriptions[2].setBinding(0);
     vertexAttributeDescriptions[2].setFormat(vk::Format::eR32G32Sfloat);
     vertexAttributeDescriptions[2].setOffset(offsetof(Rml::Vertex, tex_coord));
-    pipelineBuilder.m_vertexInputStateInfo.setVertexAttributeDescriptionCount(
-        3);
+    pipelineBuilder.setVertexAttributeDescriptionCount(3);
 
     shaderStageInfos[0].setModule(mainVertShader);
     shaderStageInfos[1].setModule(colorFragShader);
@@ -803,7 +799,7 @@ Rml::TextureHandle Renderer_VX::CreateTexture(vk::Buffer buffer,
     const auto commandBuffer = m_Context->BeginTransfer(this);
 
     vx::ImageMemoryBarrierState imageMemoryBarrier(
-        t->m_Image, vk::ImageAspectFlagBits::bColor);
+        t->m_Image, vx::allSubresourceRange(vk::ImageAspectFlagBits::bColor));
 
     imageMemoryBarrier.update(vk::ImageLayout::eTransferDstOptimal,
                               vk::PipelineStageFlagBits2::bCopy,
