@@ -21,7 +21,7 @@ struct Renderer_VX : Rml::RenderInterface {
 
     void BeginFrame(vx::CommandBuffer commandBuffer, uint32_t frame);
     void EndFrame();
-    void ResetFrame(uint32_t frame);
+    void ResetResources(uint8_t useFlags);
 
     /// Called by RmlUi when it wants to compile geometry it believes will be
     /// static for the forseeable future.
@@ -113,11 +113,11 @@ private:
             }
         }
 
-        void ReleaseAllUse(Renderer_VX& self, uint8_t useFlag) {
+        void ReleaseAllUse(Renderer_VX& self, uint8_t useFlags) {
             for (uintptr_t index = 0; index != m_Count; ++index) {
                 auto& use = m_Uses[index];
-                if (use & useFlag) {
-                    if (!(use &= ~useFlag)) {
+                if (use & useFlags) {
+                    if (!(use &= ~useFlags)) {
                         Free(self, index);
                     }
                 }

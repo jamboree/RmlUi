@@ -63,9 +63,8 @@ void GfxContext_VX::DestroyFrameResources() {
 }
 
 void GfxContext_VX::Destroy() {
-    for (uint32_t i = 0; i != InFlightCount; ++i) {
-        m_Renderer.ResetFrame(i);
-    }
+    const uint8_t useFlags = (2u << InFlightCount) - 1u & ~1u;
+    m_Renderer.ResetResources(useFlags);
     m_Renderer.Shutdown();
 
     DestroyFrameResources();
@@ -116,10 +115,11 @@ void GfxContext_VX::Destroy() {
 }
 
 void GfxContext_VX::BeginFrame(vk::Extent2D extent) {
+    const uint8_t useFlag = 2u << m_FrameNumber;
     const auto& syncObject = m_SyncObjects[m_FrameNumber];
     check(
         m_Device.waitForFences(1, &syncObject.m_RenderFence, true, UINT64_MAX));
-    m_Renderer.ResetFrame(m_FrameNumber);
+    m_Renderer.ResetResources(useFlag);
     m_Allocator.setCurrentFrameIndex(m_FrameNumber);
     if (auto ret = m_Device.acquireNextImageKHR(m_Swapchain, UINT64_MAX,
                                                 syncObject.m_AcquireSemaphore);

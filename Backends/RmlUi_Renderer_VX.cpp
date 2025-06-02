@@ -182,11 +182,10 @@ void Renderer_VX::BeginFrame(vx::CommandBuffer commandBuffer, uint32_t frame) {
 
 void Renderer_VX::EndFrame() { m_CommandBuffer = {}; }
 
-void Renderer_VX::ResetFrame(uint32_t frame) {
-    const uint8_t useFlag = 2u << frame;
-    m_GeometryResources.ReleaseAllUse(*this, useFlag);
-    m_TextureResources.ReleaseAllUse(*this, useFlag);
-    m_ShaderResources.ReleaseAllUse(*this, useFlag);
+void Renderer_VX::ResetResources(uint8_t useFlags) {
+    m_GeometryResources.ReleaseAllUse(*this, useFlags);
+    m_TextureResources.ReleaseAllUse(*this, useFlags);
+    m_ShaderResources.ReleaseAllUse(*this, useFlags);
 }
 
 Rml::CompiledGeometryHandle
