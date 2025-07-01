@@ -63,8 +63,7 @@ void GfxContext_VX::DestroyFrameResources() {
 }
 
 void GfxContext_VX::Destroy() {
-    const uint8_t useFlags = (2u << InFlightCount) - 1u & ~1u;
-    m_Renderer.ResetResources(useFlags);
+    m_Renderer.ResetResources((2u << InFlightCount) - 2u);
     m_Renderer.Shutdown();
 
     DestroyFrameResources();
