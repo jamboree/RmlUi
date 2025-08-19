@@ -59,6 +59,9 @@ void GfxContext_VX::DestroyFrameResources() {
         if (frameResource.m_ImageView) {
             m_Device.destroyImageView(frameResource.m_ImageView);
         }
+        if (frameResource.m_RenderSemaphore) {
+            m_Device.destroySemaphore(frameResource.m_RenderSemaphore);
+        }
     }
 }
 
@@ -74,15 +77,14 @@ void GfxContext_VX::Destroy() {
     if (m_TempSemaphore) {
         m_Device.destroySemaphore(m_TempSemaphore);
     }
-    for (auto& syncObject : m_SyncObjects) {
-        if (syncObject.m_AcquireSemaphore) {
-            m_Device.destroySemaphore(syncObject.m_AcquireSemaphore);
+    for (const auto fence : m_RenderFences) {
+        if (fence) {
+            m_Device.destroyFence(fence);
         }
-        if (syncObject.m_RenderSemaphore) {
-            m_Device.destroySemaphore(syncObject.m_RenderSemaphore);
-        }
-        if (syncObject.m_RenderFence) {
-            m_Device.destroyFence(syncObject.m_RenderFence);
+    }
+    for (const auto semaphore : m_AcquireSemaphores) {
+        if (semaphore) {
+            m_Device.destroySemaphore(semaphore);
         }
     }
     if (m_DescriptorPool) {
@@ -115,13 +117,13 @@ void GfxContext_VX::Destroy() {
 
 void GfxContext_VX::BeginFrame(vk::Extent2D extent) {
     const uint8_t useFlag = 2u << m_FrameNumber;
-    const auto& syncObject = m_SyncObjects[m_FrameNumber];
-    check(
-        m_Device.waitForFences(1, &syncObject.m_RenderFence, true, UINT64_MAX));
+    const auto& acquireSemaphore = m_AcquireSemaphores[m_FrameNumber];
+    check(m_Device.waitForFences(1, m_RenderFences + m_FrameNumber, true,
+                                 UINT64_MAX));
     m_Renderer.ResetResources(useFlag);
     m_Allocator.setCurrentFrameIndex(m_FrameNumber);
     if (auto ret = m_Device.acquireNextImageKHR(m_Swapchain, UINT64_MAX,
-                                                syncObject.m_AcquireSemaphore);
+                                                acquireSemaphore);
         ret.result == vk::Result::eErrorOutOfDateKHR) [[unlikely]] {
         RecreateRenderTarget(extent);
     } else {
@@ -199,7 +201,9 @@ void GfxContext_VX::BeginFrame(vk::Extent2D extent) {
 }
 
 void GfxContext_VX::EndFrame() {
-    const auto& syncObject = m_SyncObjects[m_FrameNumber];
+    const auto& acquireSemaphore = m_AcquireSemaphores[m_FrameNumber];
+    const auto& renderSemaphore =
+        m_FrameResources[m_ImageIndex].m_RenderSemaphore;
     const auto commandBuffer = m_CommandBuffers[m_FrameNumber];
 
     m_Renderer.EndFrame();
@@ -223,11 +227,11 @@ void GfxContext_VX::EndFrame() {
     vk::CommandBufferSubmitInfo bufferSubmitInfo;
     bufferSubmitInfo.setCommandBuffer(commandBuffer);
     vk::SemaphoreSubmitInfo acquireSemaphoreInfo;
-    acquireSemaphoreInfo.setSemaphore(syncObject.m_AcquireSemaphore);
+    acquireSemaphoreInfo.setSemaphore(acquireSemaphore);
     acquireSemaphoreInfo.setStageMask(
         vk::PipelineStageFlagBits2::bColorAttachmentOutput);
     vk::SemaphoreSubmitInfo renderSemaphoreInfo;
-    renderSemaphoreInfo.setSemaphore(syncObject.m_RenderSemaphore);
+    renderSemaphoreInfo.setSemaphore(renderSemaphore);
     renderSemaphoreInfo.setStageMask(
         vk::PipelineStageFlagBits2::bColorAttachmentOutput);
     vk::SubmitInfo2 submitInfo;
@@ -238,15 +242,15 @@ void GfxContext_VX::EndFrame() {
     submitInfo.setSignalSemaphoreInfoCount(1);
     submitInfo.setSignalSemaphoreInfos(&renderSemaphoreInfo);
 
-    check(m_Device.resetFences(1, &syncObject.m_RenderFence));
-    check(m_Queue.submit2(1, &submitInfo, syncObject.m_RenderFence));
+    check(m_Device.resetFences(1, m_RenderFences + m_FrameNumber));
+    check(m_Queue.submit2(1, &submitInfo, m_RenderFences[m_FrameNumber]));
 
     vk::PresentInfoKHR presentInfo;
     presentInfo.setSwapchainCount(1);
     presentInfo.setSwapchains(&m_Swapchain);
     presentInfo.setImageIndices(&m_ImageIndex);
     presentInfo.setWaitSemaphoreCount(1);
-    presentInfo.setWaitSemaphores(&syncObject.m_RenderSemaphore);
+    presentInfo.setWaitSemaphores(&renderSemaphore);
 
     if (const auto ret = m_Queue.presentKHR(presentInfo);
         ret == vk::Result::eErrorOutOfDateKHR ||
@@ -483,15 +487,14 @@ void GfxContext_VX::InitDevice(PhysicalDeviceInfo& physicalDeviceInfo,
 }
 
 void GfxContext_VX::InitSyncObjects() {
-    vk::SemaphoreCreateInfo semaphoreInfo;
+    const vk::SemaphoreCreateInfo semaphoreInfo;
+    for (auto& semaphore : m_AcquireSemaphores) {
+        semaphore = m_Device.createSemaphore(semaphoreInfo).get();
+    }
     vk::FenceCreateInfo fenceInfo;
     fenceInfo.setFlags(vk::FenceCreateFlagBits::bSignaled);
-    for (auto& syncObject : m_SyncObjects) {
-        syncObject.m_AcquireSemaphore =
-            m_Device.createSemaphore(semaphoreInfo).get();
-        syncObject.m_RenderSemaphore =
-            m_Device.createSemaphore(semaphoreInfo).get();
-        syncObject.m_RenderFence = m_Device.createFence(fenceInfo).get();
+    for (auto& fence : m_RenderFences) {
+        fence = m_Device.createFence(fenceInfo).get();
     }
     m_TempSemaphore = m_Device.createTimelineSemaphore(1).get();
 }
@@ -544,6 +547,7 @@ void GfxContext_VX::BuildFrameResources() {
         m_Device.getSwapchainImagesKHR(m_Swapchain).get();
     m_FrameResources.count = swapchainImages.count;
     m_FrameResources.prepare();
+    const vk::SemaphoreCreateInfo semaphoreInfo;
 
     for (unsigned i = 0; i != swapchainImages.count; ++i) {
         auto& frameResource = m_FrameResources[i];
@@ -553,6 +557,8 @@ void GfxContext_VX::BuildFrameResources() {
             m_SwapchainImageFormat, vk::ImageAspectFlagBits::bColor);
         frameResource.m_ImageView =
             m_Device.createImageView(imageViewInfo).get();
+        frameResource.m_RenderSemaphore =
+            m_Device.createSemaphore(semaphoreInfo).get();
     }
 }
 

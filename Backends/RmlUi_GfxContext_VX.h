@@ -12,15 +12,10 @@ struct PhysicalDeviceInfo {
     bool HasExtension(std::string_view name) const noexcept;
 };
 
-struct SyncObject {
-    vk::Semaphore m_AcquireSemaphore;
-    vk::Semaphore m_RenderSemaphore;
-    vk::Fence m_RenderFence;
-};
-
 struct FrameResource {
     vk::Image m_Image;
     vk::ImageView m_ImageView;
+    vk::Semaphore m_RenderSemaphore;
 };
 
 struct ImageAttachment {
@@ -51,7 +46,8 @@ struct GfxContext_VX : RenderContext_VX {
     vk::CommandPool m_TempCommandPool;
     vx::CommandBuffer m_CommandBuffers[InFlightCount];
     vk::DescriptorPool m_DescriptorPool;
-    SyncObject m_SyncObjects[InFlightCount];
+    vk::Semaphore m_AcquireSemaphores[InFlightCount];
+    vk::Fence m_RenderFences[InFlightCount];
     vk::Semaphore m_TempSemaphore;
     vk::SwapchainKHR m_Swapchain;
     vx::List<FrameResource> m_FrameResources;
