@@ -5,6 +5,7 @@
 	by other means, without an error being emitted here. For the same reason, instead of relying on variables like
 	*_NOTFOUND variables, we check directly for the existence of the target.
 ]]
+find_package(Boost REQUIRED)
 
 if(RMLUI_FONT_ENGINE STREQUAL "freetype")
 	find_package(Freetype REQUIRED)

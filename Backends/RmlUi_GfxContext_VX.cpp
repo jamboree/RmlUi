@@ -1,5 +1,6 @@
 #include "RmlUi_GfxContext_VX.h"
 #include <RmlUi/Core/Log.h>
+#include <algorithm>
 
 bool PhysicalDeviceInfo::Init(vx::PhysicalDevice physicalDevice) {
     physicalDevice.getProperties(&m_Properties);

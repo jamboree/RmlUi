@@ -52,14 +52,9 @@
 	#include <utility>
 	#include <vector>
 
-	#ifdef RMLUI_NO_THIRDPARTY_CONTAINERS
-		#include <set>
-		#include <unordered_set>
-	#else
-		#include "../Core/Containers/itlib/flat_map.hpp"
-		#include "../Core/Containers/itlib/flat_set.hpp"
-		#include "../Core/Containers/robin_hood.h"
-	#endif // RMLUI_NO_THIRDPARTY_CONTAINERS
+	#include <boost/container/flat_set.hpp>
+	#include <boost/unordered/unordered_flat_map.hpp>
+	#include <boost/unordered/unordered_flat_set.hpp>
 
 namespace Rml {
 
@@ -94,29 +89,16 @@ using StableUnorderedMap = std::unordered_map<Key, Value>;
 template <typename Key, typename Value>
 using UnorderedMultimap = std::unordered_multimap<Key, Value>;
 
-	#ifdef RMLUI_NO_THIRDPARTY_CONTAINERS
 template <typename Key, typename Value>
-using UnorderedMap = std::unordered_map<Key, Value>;
+using UnorderedMap = boost::unordered_flat_map<Key, Value>;
 template <typename Key, typename Value>
-using SmallUnorderedMap = UnorderedMap<Key, Value>;
+using SmallUnorderedMap = boost::unordered_flat_map<Key, Value>;
 template <typename T>
-using UnorderedSet = std::unordered_set<T>;
+using UnorderedSet = boost::unordered_flat_set<T>;
 template <typename T>
-using SmallUnorderedSet = std::unordered_set<T>;
+using SmallUnorderedSet = boost::unordered_flat_set<T>;
 template <typename T>
-using SmallOrderedSet = std::set<T>;
-	#else
-template <typename Key, typename Value>
-using UnorderedMap = robin_hood::unordered_flat_map<Key, Value>;
-template <typename Key, typename Value>
-using SmallUnorderedMap = itlib::flat_map<Key, Value>;
-template <typename T>
-using UnorderedSet = robin_hood::unordered_flat_set<T>;
-template <typename T>
-using SmallUnorderedSet = itlib::flat_set<T>;
-template <typename T>
-using SmallOrderedSet = itlib::flat_set<T>;
-	#endif // RMLUI_NO_THIRDPARTY_CONTAINERS
+using SmallOrderedSet = boost::container::flat_set<T>;
 
 // Utilities.
 template <typename T>

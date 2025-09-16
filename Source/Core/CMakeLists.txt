@@ -390,6 +390,8 @@ elseif(rmlui_core_TYPE STREQUAL "SHARED_LIBRARY")
 endif()
 unset(rmlui_core_TYPE)
 
+target_link_libraries(rmlui_core PUBLIC Boost::headers)
+
 if(RMLUI_FONT_ENGINE STREQUAL "freetype")
 	# Include the source files for the default font engine.
 	add_subdirectory("FontEngineDefault")
