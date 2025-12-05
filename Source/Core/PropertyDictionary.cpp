@@ -36,7 +36,7 @@ PropertyDictionary::PropertyDictionary() {}
 void PropertyDictionary::SetProperty(PropertyId id, const Property& property)
 {
 	RMLUI_ASSERT(id != PropertyId::Invalid);
-	properties[id] = property;
+	properties.insert_or_assign(id, property);
 }
 
 void PropertyDictionary::RemoveProperty(PropertyId id)
@@ -47,11 +47,8 @@ void PropertyDictionary::RemoveProperty(PropertyId id)
 
 const Property* PropertyDictionary::GetProperty(PropertyId id) const
 {
-	PropertyMap::const_iterator iterator = properties.find(id);
-	if (iterator == properties.end())
-		return nullptr;
-
-	return &(*iterator).second;
+	const auto it = properties.find(id);
+	return it == properties.end() ? nullptr : &it->second;
 }
 
 int PropertyDictionary::GetNumProperties() const
@@ -92,12 +89,14 @@ void PropertyDictionary::SetSourceOfAllProperties(const SharedPtr<const Property
 
 void PropertyDictionary::SetProperty(PropertyId id, const Property& property, int specificity)
 {
-	PropertyMap::iterator iterator = properties.find(id);
-	if (iterator != properties.end() && iterator->second.specificity > specificity)
-		return;
-
-	Property& new_property = (properties[id] = property);
-	new_property.specificity = specificity;
+	auto [it, inserted] = properties.try_emplace(id, property);
+	if (!inserted) {
+		if (it->second.specificity > specificity) {
+			return;
+		}
+		it->second = property;
+	}
+	it->second.specificity = specificity;
 }
 
 } // namespace Rml
