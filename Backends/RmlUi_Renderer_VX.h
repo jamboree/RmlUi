@@ -88,18 +88,19 @@ private:
 
     template<class T>
     struct ResourcePool {
-        std::pair<uintptr_t, T*> Allocate() {
+        uintptr_t Create(const T& resource) {
             uintptr_t index;
             if (m_FreeHead < m_Count) {
                 index = m_FreeHead;
                 m_FreeHead = m_Elems[index].m_NextFree;
             } else {
                 index = m_Count;
-                New();
+                Alloc();
                 m_FreeHead = m_Count;
             }
             m_Uses[index] = 1u;
-            return {index, new (m_Elems + index) T()};
+            m_Elems[index].m_Resource = resource;
+            return index;
         }
 
         const T* Use(uintptr_t index, uint8_t useFlag) const noexcept {
@@ -130,7 +131,7 @@ private:
             uintptr_t m_NextFree;
         };
 
-        void New() {
+        void Alloc() {
             if (m_Count == m_Capacity) {
                 m_Capacity += (m_Capacity / 2) | 16;
                 m_Uses = static_cast<uint8_t*>(

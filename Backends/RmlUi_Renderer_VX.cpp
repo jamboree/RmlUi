@@ -193,12 +193,12 @@ Renderer_VX::CompileGeometry(Rml::Span<const Rml::Vertex> vertices,
                              Rml::Span<const int> indices) {
     const auto allocator = m_Context->GetAllocator();
 
-    const auto [index, g] = m_GeometryResources.Allocate();
-    g->m_VertexCount = uint32_t(vertices.size());
-    g->m_IndexCount = uint32_t(indices.size());
+    GeometryResource g;
+    g.m_VertexCount = uint32_t(vertices.size());
+    g.m_IndexCount = uint32_t(indices.size());
 
-    const auto vertexBytes = g->m_VertexCount * sizeof(Rml::Vertex);
-    const auto indexBytes = g->m_IndexCount * sizeof(uint32_t);
+    const auto vertexBytes = g.m_VertexCount * sizeof(Rml::Vertex);
+    const auto indexBytes = g.m_IndexCount * sizeof(uint32_t);
     vk::BufferCreateInfo bufferInfo;
     bufferInfo.setSize(vertexBytes + indexBytes);
     bufferInfo.setUsage(vk::BufferUsageFlagBits::bVertexBuffer |
@@ -212,17 +212,17 @@ Renderer_VX::CompileGeometry(Rml::Span<const Rml::Vertex> vertices,
     allocationInfo.setUsage(vma::MemoryUsage::eAutoPreferDevice);
 
     vma::AllocationInfo allocInfo;
-    g->m_Buffer = allocator
-                      .createBuffer(bufferInfo, allocationInfo,
-                                    &g->m_Allocation, &allocInfo)
-                      .get();
+    g.m_Buffer = allocator
+                     .createBuffer(bufferInfo, allocationInfo, &g.m_Allocation,
+                                   &allocInfo)
+                     .get();
 
     auto p = static_cast<uint8_t*>(allocInfo.getMappedData());
     std::memcpy(p, vertices.data(), vertexBytes);
     p += vertexBytes;
     std::memcpy(p, indices.data(), indexBytes);
 
-    return ~index;
+    return ~m_GeometryResources.Create(g);
 }
 
 void Renderer_VX::RenderGeometry(Rml::CompiledGeometryHandle geometry,
@@ -526,7 +526,7 @@ Renderer_VX::CompileShader(const Rml::String& name,
 
     const auto allocator = m_Context->GetAllocator();
 
-    const auto [index, s] = m_ShaderResources.Allocate();
+    ShaderResource s;
 
     const auto uniformSize = uniform.GetUsedSize();
     vk::BufferCreateInfo bufferInfo;
@@ -541,14 +541,14 @@ Renderer_VX::CompileShader(const Rml::String& name,
     allocationInfo.setUsage(vma::MemoryUsage::eAutoPreferDevice);
 
     vma::AllocationInfo allocInfo;
-    s->m_Buffer = allocator
-                      .createBuffer(bufferInfo, allocationInfo,
-                                    &s->m_Allocation, &allocInfo)
-                      .get();
+    s.m_Buffer = allocator
+                     .createBuffer(bufferInfo, allocationInfo, &s.m_Allocation,
+                                   &allocInfo)
+                     .get();
 
     std::memcpy(allocInfo.getMappedData(), &uniform, uniformSize);
 
-    return ~index;
+    return ~m_ShaderResources.Create(s);
 }
 
 void Renderer_VX::RenderShader(Rml::CompiledShaderHandle shader,
@@ -740,7 +740,7 @@ Rml::TextureHandle Renderer_VX::CreateTexture(vk::Buffer buffer,
     const auto device = m_Context->GetDevice();
     const auto allocator = m_Context->GetAllocator();
 
-    const auto [index, t] = m_TextureResources.Allocate();
+    TextureResource t;
 
     const vk::Extent2D extent(dimensions.x, dimensions.y);
     const auto imageInfo =
@@ -751,14 +751,13 @@ Rml::TextureHandle Renderer_VX::CreateTexture(vk::Buffer buffer,
     vma::AllocationCreateInfo allocationInfo;
     allocationInfo.setUsage(vma::MemoryUsage::eAutoPreferDevice);
 
-    t->m_Image =
-        allocator.createImage(imageInfo, allocationInfo, &t->m_Allocation)
-            .get();
+    t.m_Image =
+        allocator.createImage(imageInfo, allocationInfo, &t.m_Allocation).get();
 
     const auto commandBuffer = m_Context->BeginTemp();
 
     vx::ImageMemoryBarrierState imageMemoryBarrier(
-        t->m_Image, vx::allSubresourceRange(vk::ImageAspectFlagBits::bColor));
+        t.m_Image, vx::allSubresourceRange(vk::ImageAspectFlagBits::bColor));
 
     imageMemoryBarrier.update(vk::ImageLayout::eTransferDstOptimal,
                               vk::PipelineStageFlagBits2::bCopy,
@@ -769,7 +768,7 @@ Rml::TextureHandle Renderer_VX::CreateTexture(vk::Buffer buffer,
     bufferImageCopy.setImageSubresource(
         vx::subresourceLayers(vk::ImageAspectFlagBits::bColor, 1));
     bufferImageCopy.setImageExtent(vx::toExtent3D(extent));
-    commandBuffer.cmdCopyBufferToImage(buffer, t->m_Image,
+    commandBuffer.cmdCopyBufferToImage(buffer, t.m_Image,
                                        vk::ImageLayout::eTransferDstOptimal, 1,
                                        &bufferImageCopy);
 
@@ -781,9 +780,9 @@ Rml::TextureHandle Renderer_VX::CreateTexture(vk::Buffer buffer,
     m_Context->EndTemp(commandBuffer);
 
     const auto imageViewInfo = vx::imageViewCreateInfo(
-        vk::ImageViewType::e2D, t->m_Image, imageInfo.getFormat(),
+        vk::ImageViewType::e2D, t.m_Image, imageInfo.getFormat(),
         vk::ImageAspectFlagBits::bColor);
-    t->m_ImageView = device.createImageView(imageViewInfo).get();
+    t.m_ImageView = device.createImageView(imageViewInfo).get();
 
-    return ~index;
+    return ~m_TextureResources.Create(t);
 }

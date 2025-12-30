@@ -53,6 +53,7 @@
 	#include <vector>
 
 	#include <boost/container/flat_set.hpp>
+	#include <boost/container/flat_map.hpp>
 	#include <boost/unordered/unordered_flat_map.hpp>
 	#include <boost/unordered/unordered_flat_set.hpp>
 
@@ -99,6 +100,8 @@ template <typename T>
 using SmallUnorderedSet = boost::unordered_flat_set<T>;
 template <typename T>
 using SmallOrderedSet = boost::container::flat_set<T>;
+template <typename Key, typename Value>
+using SmallOrderedMap = boost::container::flat_map<Key, Value>;
 
 // Utilities.
 template <typename T>
