@@ -1,6 +1,7 @@
 #pragma once
 
-#include "RmlUi_Renderer_VX.h"
+#include "RmlUi_Include_VulkanX.h"
+#include <vector>
 
 struct PhysicalDeviceInfo {
     vk::PhysicalDeviceProperties m_Properties;
@@ -12,19 +13,19 @@ struct PhysicalDeviceInfo {
     bool HasExtension(std::string_view name) const noexcept;
 };
 
-struct FrameResource {
-    vk::Image m_Image;
-    vk::ImageView m_ImageView;
-    vk::Semaphore m_RenderSemaphore;
-};
-
 struct ImageAttachment {
     vk::Image m_Image;
     vk::ImageView m_ImageView;
     vma::Allocation m_Allocation;
 };
 
-struct GfxContext_VX : RenderContext_VX {
+struct FrameResource {
+    vk::Image m_Image;
+    vk::ImageView m_ImageView;
+    vk::Semaphore m_RenderSemaphore;
+};
+
+struct GfxContext_VX {
     static constexpr uint32_t VulkanApiVersion = VK_API_VERSION_1_3;
     static constexpr uint32_t InFlightCount = 2;
     static constexpr const char* const RequiredDeviceExtensions[] = {
@@ -55,28 +56,24 @@ struct GfxContext_VX : RenderContext_VX {
 
     vk::Format m_SwapchainImageFormat = vk::Format::eB8G8R8A8Unorm;
     vk::Format m_DepthStencilImageFormat = vk::Format::eD24UnormS8Uint;
+    vk::SampleCountFlagBits m_SampleCount = vk::SampleCountFlagBits::b1;
     vk::Extent2D m_FrameExtent;
     uint32_t m_FrameNumber = 0;
     uint32_t m_ImageIndex = 0;
     uint32_t m_QueueFamilyIndex = 0;
     bool m_RenderTargetOutdated = false;
 
-    Renderer_VX m_Renderer;
-
     void DestroyFrameResources();
-
-    void DestroyImageAttachment(const ImageAttachment& res) {
-        if (res.m_ImageView) {
-            m_Device.destroyImageView(res.m_ImageView);
-        }
-        if (res.m_Image) {
-            m_Allocator.destroyImage(res.m_Image, res.m_Allocation);
-        }
-    }
 
     void Destroy();
 
-    void BeginFrame(vk::Extent2D extent);
+    void AcquireNextFrame() {
+        m_FrameNumber = (m_FrameNumber + 1) % InFlightCount;
+        check(m_Device.waitForFences(1, m_RenderFences + m_FrameNumber, true,
+            UINT64_MAX));
+    }
+
+    vx::CommandBuffer BeginFrame(vk::Extent2D extent);
 
     void EndFrame();
 
@@ -101,8 +98,6 @@ struct GfxContext_VX : RenderContext_VX {
 
     void BuildSwapchain(const vk::SurfaceCapabilitiesKHR& capabilities);
 
-    void BuildDepthStencilImage();
-
     void BuildFrameResources();
 
     void UpdateExtent(const vk::SurfaceCapabilitiesKHR& capabilities,
@@ -112,13 +107,27 @@ struct GfxContext_VX : RenderContext_VX {
         const vx::List<vk::QueueFamilyProperties>& queueFamilyProperties,
         vk::QueueFlags flags, vk::SurfaceKHR surface = {}) const;
 
-    vx::Device GetDevice() override { return m_Device; }
+    vx::Device GetDevice() { return m_Device; }
 
-    vma::Allocator GetAllocator() override { return m_Allocator; }
+    vma::Allocator GetAllocator() { return m_Allocator; }
 
-    vk::Extent2D GetFrameExtent() override { return m_FrameExtent; }
+    vk::Extent2D GetFrameExtent() { return m_FrameExtent; }
 
-    vx::CommandBuffer BeginTemp() override;
+    vx::CommandBuffer BeginTemp();
 
-    void EndTemp(vk::CommandBuffer commandBuffer) override;
+    void EndTemp(vk::CommandBuffer commandBuffer);
+
+    ImageAttachment CreateImageAttachment(vk::Format format,
+                                          vk::ImageUsageFlags usage,
+                                          vk::ImageAspectFlags aspectFlags,
+                                          vk::SampleCountFlagBits sampleCount);
+
+    void DestroyImageAttachment(const ImageAttachment& res) {
+        if (res.m_ImageView) {
+            m_Device.destroyImageView(res.m_ImageView);
+        }
+        if (res.m_Image) {
+            m_Allocator.destroyImage(res.m_Image, res.m_Allocation);
+        }
+    }
 };

@@ -1,5 +1,6 @@
 #include "RmlUi_Backend.h"
 #include "RmlUi_GfxContext_VX.h"
+#include "RmlUi_Renderer_VX.h"
 #include "RmlUi_Platform_GLFW.h"
 #include <RmlUi/Config/Config.h>
 #include <RmlUi/Core/Context.h>
@@ -13,6 +14,7 @@ struct BackendContext {
     GLFWwindow* m_Window = nullptr;
     std::optional<SystemInterface_GLFW> m_System;
     GfxContext_VX m_Gfx;
+    Renderer_VX m_Renderer;
 
     Rml::Context* m_Context = nullptr;
     KeyDownCallback m_KeyDownCallback = nullptr;
@@ -52,6 +54,12 @@ struct BackendContext {
         if (!m_Gfx.InitContext())
             return false;
 
+        if (!m_Renderer.Init(m_Gfx)) {
+            Rml::Log::Message(Rml::Log::LT_ERROR,
+                              "Failed to initialize Vulkan render interface");
+            return false;
+        }
+
         UpdateFramebufferSize();
         m_Gfx.InitRenderTarget(m_FrameExtent);
 
@@ -77,6 +85,8 @@ struct BackendContext {
         if (m_Gfx.m_Device) {
             (void)m_Gfx.m_Device.waitIdle();
         }
+        m_Renderer.ResetResources((2u << GfxContext_VX::InFlightCount) - 2u);
+        m_Renderer.Destroy();
         m_Gfx.Destroy();
         if (m_Window) {
             glfwDestroyWindow(m_Window);
@@ -108,7 +118,6 @@ struct BackendContext {
             if (m_FrameExtent.width) {
                 if (m_Gfx.m_RenderTargetOutdated) {
                     m_Gfx.RecreateRenderTarget(m_FrameExtent);
-                    m_Gfx.m_RenderTargetOutdated = false;
                 }
                 break;
             }
@@ -231,6 +240,18 @@ struct BackendContext {
                                                      xscale);
             });
     }
+
+    void BeginFrame() {
+        m_Gfx.AcquireNextFrame();
+        m_Renderer.ResetResources(2u << m_Gfx.m_FrameNumber);
+        auto commandBuffer = m_Gfx.BeginFrame(m_FrameExtent);
+        m_Renderer.BeginFrame(commandBuffer, m_Gfx.m_FrameNumber);
+    }
+
+    void EndFrame() {
+        m_Renderer.EndFrame();
+        m_Gfx.EndFrame();
+    }
 };
 
 static BackendContext g_BackendContext;
@@ -260,7 +281,7 @@ Rml::SystemInterface* Backend::GetSystemInterface() {
 }
 
 Rml::RenderInterface* Backend::GetRenderInterface() {
-    return &g_BackendContext.m_Gfx.m_Renderer;
+    return &g_BackendContext.m_Renderer;
 }
 
 bool Backend::ProcessEvents(Rml::Context* context,
@@ -274,8 +295,6 @@ void Backend::RequestExit() {
     glfwSetWindowShouldClose(g_BackendContext.m_Window, GLFW_TRUE);
 }
 
-void Backend::BeginFrame() {
-    g_BackendContext.m_Gfx.BeginFrame(g_BackendContext.m_FrameExtent);
-}
+void Backend::BeginFrame() { g_BackendContext.BeginFrame(); }
 
-void Backend::PresentFrame() { g_BackendContext.m_Gfx.EndFrame(); }
+void Backend::PresentFrame() { g_BackendContext.EndFrame(); }

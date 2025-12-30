@@ -1,23 +1,14 @@
 #pragma once
 
 #include <RmlUi/Core/RenderInterface.h>
-#include <vx.hpp>
-
-struct RenderContext_VX {
-    virtual vx::Device GetDevice() = 0;
-    virtual vma::Allocator GetAllocator() = 0;
-    virtual vk::Extent2D GetFrameExtent() = 0;
-    virtual vx::CommandBuffer BeginTemp() = 0;
-    virtual void EndTemp(vk::CommandBuffer commandBuffer) = 0;
-};
+#include "RmlUi_GfxContext_VX.h"
 
 struct Renderer_VX : Rml::RenderInterface {
     Renderer_VX();
     ~Renderer_VX();
 
-    bool Init(RenderContext_VX& context,
-              vk::PipelineRenderingCreateInfo& renderingInfo);
-    void Shutdown();
+    bool Init(GfxContext_VX& context);
+    void Destroy();
 
     void BeginFrame(vx::CommandBuffer commandBuffer, uint32_t frame);
     void EndFrame();
@@ -156,6 +147,45 @@ private:
         Elem* m_Elems = nullptr;
     };
 
+    struct RenderLayerStack {
+        enum class Postprocess {
+            Primary,
+            Secondary,
+            Tertiary,
+            BlendMask,
+        };
+        // Push a new layer. All references to previously retrieved layers are
+        // invalidated.
+        Rml::LayerHandle PushLayer(GfxContext_VX& ctx);
+
+        // Pop the top layer. All references to previously retrieved layers are
+        // invalidated.
+        void PopLayer();
+
+        const ImageAttachment& GetLayer(Rml::LayerHandle layer) const;
+        const ImageAttachment& GetTopLayer() const;
+        Rml::LayerHandle GetTopLayerHandle() const;
+
+        const ImageAttachment& GetPostprocess(Postprocess id);
+
+        void SwapPostprocessPrimarySecondary();
+
+        void BeginFrame(vk::Extent2D extent);
+        void EndFrame();
+
+    private:
+        void DestroyFramebuffers();
+
+        vk::Extent2D m_extent;
+
+        // The number of active layers is manually tracked since we re-use the
+        // framebuffers stored in the fb_layers stack.
+        int m_layers_size = 0;
+
+        std::vector<ImageAttachment> m_layers;
+        ImageAttachment m_postprocess[4];
+    };
+
     void InitPipelineLayouts();
     void InitPipelines(vk::PipelineRenderingCreateInfo& renderingInfo);
 
@@ -166,7 +196,7 @@ private:
     void Destroy(TextureResource& t);
     void Destroy(ShaderResource& s);
 
-    RenderContext_VX* m_Context = nullptr;
+    GfxContext_VX* m_Context = nullptr;
     ResourcePool<GeometryResource> m_GeometryResources;
     ResourcePool<TextureResource> m_TextureResources;
     ResourcePool<ShaderResource> m_ShaderResources;

@@ -67,9 +67,6 @@ void GfxContext_VX::DestroyFrameResources() {
 }
 
 void GfxContext_VX::Destroy() {
-    m_Renderer.ResetResources((2u << InFlightCount) - 2u);
-    m_Renderer.Shutdown();
-
     DestroyFrameResources();
     DestroyImageAttachment(m_DepthStencilImage);
     if (m_Swapchain) {
@@ -116,12 +113,8 @@ void GfxContext_VX::Destroy() {
     }
 }
 
-void GfxContext_VX::BeginFrame(vk::Extent2D extent) {
-    const uint8_t useFlag = 2u << m_FrameNumber;
+vx::CommandBuffer GfxContext_VX::BeginFrame(vk::Extent2D extent) {
     const auto& acquireSemaphore = m_AcquireSemaphores[m_FrameNumber];
-    check(m_Device.waitForFences(1, m_RenderFences + m_FrameNumber, true,
-                                 UINT64_MAX));
-    m_Renderer.ResetResources(useFlag);
     m_Allocator.setCurrentFrameIndex(m_FrameNumber);
     if (auto ret = m_Device.acquireNextImageKHR(m_Swapchain, UINT64_MAX,
                                                 acquireSemaphore);
@@ -139,25 +132,25 @@ void GfxContext_VX::BeginFrame(vk::Extent2D extent) {
     beginInfo.setFlags(vk::CommandBufferUsageFlagBits::bOneTimeSubmit);
     check(commandBuffer.begin(beginInfo));
 
-    enum { ColorImage, DepthStencilImage, ImageCount };
-    vx::ImageMemoryBarrierState imageMemoryBarriers[ImageCount] = {
-        {m_FrameResources[m_ImageIndex].m_Image,
-         vx::allSubresourceRange(vk::ImageAspectFlagBits::bColor)},
-        {m_DepthStencilImage.m_Image,
-         vx::allSubresourceRange(vk::ImageAspectFlagBits::bDepth |
-                                 vk::ImageAspectFlagBits::bStencil)},
-    };
+    vx::ImageMemoryBarrierState imageMemoryBarriers[2];
+    auto& [colorImageBarrier, depthStencilImageBarrier] = imageMemoryBarriers;
+    colorImageBarrier.init(
+        m_FrameResources[m_ImageIndex].m_Image,
+        vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
+    depthStencilImageBarrier.init(
+        m_DepthStencilImage.m_Image,
+        vx::subresourceRange(vk::ImageAspectFlagBits::bDepth |
+                             vk::ImageAspectFlagBits::bStencil));
 
-    imageMemoryBarriers[ColorImage].update(
-        vk::ImageLayout::eAttachmentOptimal,
+    colorImageBarrier.updateLayout(vk::ImageLayout::eAttachmentOptimal);
+    colorImageBarrier.updateStageAccess(
         vk::PipelineStageFlagBits2::bColorAttachmentOutput,
         vk::AccessFlagBits2::bColorAttachmentWrite);
-    imageMemoryBarriers[DepthStencilImage].setSrcStageAccess(
+    depthStencilImageBarrier.setSrcStageAccess(
         vk::PipelineStageFlagBits2::bLateFragmentTests,
         vk::AccessFlagBits2::bDepthStencilAttachmentWrite);
-    imageMemoryBarriers[DepthStencilImage].setNewLayout(
-        vk::ImageLayout::eAttachmentOptimal);
-    imageMemoryBarriers[DepthStencilImage].setDstStageAccess(
+    depthStencilImageBarrier.setNewLayout(vk::ImageLayout::eAttachmentOptimal);
+    depthStencilImageBarrier.setDstStageAccess(
         vk::PipelineStageFlagBits2::bEarlyFragmentTests |
             vk::PipelineStageFlagBits2::bLateFragmentTests,
         vk::AccessFlagBits2::bDepthStencilAttachmentRead |
@@ -165,8 +158,7 @@ void GfxContext_VX::BeginFrame(vk::Extent2D extent) {
     commandBuffer.cmdPipelineBarriers(rawIns(imageMemoryBarriers));
 
     vk::RenderingAttachmentInfo colorAttachmentInfo;
-    colorAttachmentInfo.setImageLayout(
-        imageMemoryBarriers[ColorImage].getNewLayout());
+    colorAttachmentInfo.setImageLayout(colorImageBarrier.getNewLayout());
     colorAttachmentInfo.setLoadOp(vk::AttachmentLoadOp::eClear);
     colorAttachmentInfo.setStoreOp(vk::AttachmentStoreOp::eStore);
     colorAttachmentInfo.setImageView(
@@ -175,7 +167,7 @@ void GfxContext_VX::BeginFrame(vk::Extent2D extent) {
 
     vk::RenderingAttachmentInfo depthStencilAttachmentInfo;
     depthStencilAttachmentInfo.setImageLayout(
-        imageMemoryBarriers[DepthStencilImage].getNewLayout());
+        depthStencilImageBarrier.getNewLayout());
     depthStencilAttachmentInfo.setLoadOp(vk::AttachmentLoadOp::eClear);
     depthStencilAttachmentInfo.setStoreOp(vk::AttachmentStoreOp::eDontCare);
     depthStencilAttachmentInfo.setImageView(m_DepthStencilImage.m_ImageView);
@@ -198,7 +190,7 @@ void GfxContext_VX::BeginFrame(vk::Extent2D extent) {
     viewport.setMinDepth(0.f);
     viewport.setMaxDepth(1.f);
     commandBuffer.cmdSetViewport(0, 1, &viewport);
-    m_Renderer.BeginFrame(commandBuffer, m_FrameNumber);
+    return commandBuffer;
 }
 
 void GfxContext_VX::EndFrame() {
@@ -207,12 +199,12 @@ void GfxContext_VX::EndFrame() {
         m_FrameResources[m_ImageIndex].m_RenderSemaphore;
     const auto commandBuffer = m_CommandBuffers[m_FrameNumber];
 
-    m_Renderer.EndFrame();
     commandBuffer.cmdEndRendering();
     {
-        vx::ImageMemoryBarrierState imageMemoryBarrier{
+        vx::ImageMemoryBarrierState imageMemoryBarrier;
+        imageMemoryBarrier.init(
             m_FrameResources[m_ImageIndex].m_Image,
-            vx::allSubresourceRange(vk::ImageAspectFlagBits::bColor)};
+            vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
         imageMemoryBarrier.setOldLayout(vk::ImageLayout::eAttachmentOptimal);
         imageMemoryBarrier.setSrcStageAccess(
             vk::PipelineStageFlagBits2::bColorAttachmentOutput,
@@ -271,15 +263,9 @@ void GfxContext_VX::RecreateRenderTarget(vk::Extent2D extent) {
     DestroyFrameResources();
     DestroyImageAttachment(m_DepthStencilImage);
     m_FrameResources.count = 0;
-    vk::SurfaceCapabilitiesKHR surfaceCapabilities;
-    check(m_PhysicalDevice.getSurfaceCapabilitiesKHR(m_Surface,
-                                                     &surfaceCapabilities));
-    UpdateExtent(surfaceCapabilities, extent);
     const auto oldSwapchain = m_Swapchain;
-    BuildSwapchain(surfaceCapabilities);
+    InitRenderTarget(extent);
     m_Device.destroySwapchainKHR(oldSwapchain);
-    BuildDepthStencilImage();
-    BuildFrameResources();
 }
 
 void GfxContext_VX::InitInstance(std::vector<const char*>& extensions) {
@@ -338,19 +324,6 @@ bool GfxContext_VX::InitContext() {
     }
     InitDevice(deviceInfo, features);
     InitSyncObjects();
-
-    vk::PipelineRenderingCreateInfo renderingInfo;
-    renderingInfo.setColorAttachmentCount(1);
-    renderingInfo.setColorAttachmentFormats(&m_SwapchainImageFormat);
-    renderingInfo.setDepthAttachmentFormat(m_DepthStencilImageFormat);
-    renderingInfo.setStencilAttachmentFormat(m_DepthStencilImageFormat);
-
-    if (!m_Renderer.Init(*this, renderingInfo)) {
-        Rml::Log::Message(Rml::Log::LT_ERROR,
-                          "Failed to initialize Vulkan render interface");
-        return false;
-    }
-
     return true;
 }
 
@@ -360,8 +333,14 @@ void GfxContext_VX::InitRenderTarget(vk::Extent2D extent) {
                                                      &surfaceCapabilities));
     UpdateExtent(surfaceCapabilities, extent);
     BuildSwapchain(surfaceCapabilities);
-    BuildDepthStencilImage();
+    m_DepthStencilImage = CreateImageAttachment(
+        m_DepthStencilImageFormat,
+        vk::ImageUsageFlagBits::bDepthStencilAttachment,
+        vk::ImageAspectFlagBits::bDepth | vk::ImageAspectFlagBits::bStencil,
+        m_SampleCount);
     BuildFrameResources();
+    m_FrameNumber = InFlightCount - 1;
+    m_RenderTargetOutdated = false;
 }
 
 bool GfxContext_VX::QueryPhysicalDevice(vx::PhysicalDevice physicalDevice,
@@ -522,25 +501,28 @@ void GfxContext_VX::BuildSwapchain(
     m_Swapchain = m_Device.createSwapchainKHR(swapchainInfo).get();
 }
 
-void GfxContext_VX::BuildDepthStencilImage() {
-    const auto depthImageInfo =
-        vx::image2DCreateInfo(m_DepthStencilImageFormat, m_FrameExtent,
-                              vk::ImageUsageFlagBits::bDepthStencilAttachment);
+ImageAttachment GfxContext_VX::CreateImageAttachment(
+    vk::Format format, vk::ImageUsageFlags usage,
+    vk::ImageAspectFlags aspectFlags, vk::SampleCountFlagBits sampleCount) {
+    auto imageInfo = vx::image2DCreateInfo(format, m_FrameExtent, usage);
+    imageInfo.setSamples(sampleCount == vk::SampleCountFlagBits(0)
+                             ? m_SampleCount
+                             : sampleCount);
 
     vma::AllocationCreateInfo allocationInfo;
+    allocationInfo.setFlags(vma::AllocationCreateFlagBits::bDedicatedMemory);
     allocationInfo.setUsage(vma::MemoryUsage::eAutoPreferDevice);
 
-    m_DepthStencilImage.m_Image =
-        m_Allocator
-            .createImage(depthImageInfo, allocationInfo,
-                         &m_DepthStencilImage.m_Allocation)
+    ImageAttachment res;
+    res.m_Image =
+        m_Allocator.createImage(imageInfo, allocationInfo, &res.m_Allocation)
             .get();
-    const auto imageViewInfo = vx::imageViewCreateInfo(
-        vk::ImageViewType::e2D, m_DepthStencilImage.m_Image,
-        m_DepthStencilImageFormat,
-        vk::ImageAspectFlagBits::bDepth | vk::ImageAspectFlagBits::bStencil);
-    m_DepthStencilImage.m_ImageView =
-        m_Device.createImageView(imageViewInfo).get();
+
+    const auto imageViewInfo =
+        vx::imageViewCreateInfo(vk::ImageViewType::e2D, res.m_Image, format,
+                                vx::subresourceRange(aspectFlags));
+    res.m_ImageView = m_Device.createImageView(imageViewInfo).get();
+    return res;
 }
 
 void GfxContext_VX::BuildFrameResources() {
@@ -555,7 +537,8 @@ void GfxContext_VX::BuildFrameResources() {
         frameResource.m_Image = swapchainImages[i];
         const auto imageViewInfo = vx::imageViewCreateInfo(
             vk::ImageViewType::e2D, frameResource.m_Image,
-            m_SwapchainImageFormat, vk::ImageAspectFlagBits::bColor);
+            m_SwapchainImageFormat,
+            vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
         frameResource.m_ImageView =
             m_Device.createImageView(imageViewInfo).get();
         frameResource.m_RenderSemaphore =

@@ -71,8 +71,6 @@ struct VsInput {
     Rml::Vector2f translate;
 };
 
-#define FIELD(s, m) offsetof(s, m), sizeof(s::m)
-
 struct Renderer_VX::TextureDescriptorSet {
     static constexpr vk::ShaderStageFlags Stages =
         vk::ShaderStageFlagBits::bFragment;
@@ -90,8 +88,7 @@ struct Renderer_VX::GradientDescriptorSet {
 Renderer_VX::Renderer_VX() = default;
 Renderer_VX::~Renderer_VX() = default;
 
-bool Renderer_VX::Init(RenderContext_VX& context,
-                       vk::PipelineRenderingCreateInfo& renderingInfo) {
+bool Renderer_VX::Init(GfxContext_VX& context) {
     m_Context = &context;
 
     const auto device = m_Context->GetDevice();
@@ -105,12 +102,19 @@ bool Renderer_VX::Init(RenderContext_VX& context,
     m_Sampler = device.createSampler(samplerInfo).get();
 
     InitPipelineLayouts();
+
+    vk::PipelineRenderingCreateInfo renderingInfo;
+    renderingInfo.setColorAttachmentCount(1);
+    renderingInfo.setColorAttachmentFormats(&context.m_SwapchainImageFormat);
+    renderingInfo.setDepthAttachmentFormat(context.m_DepthStencilImageFormat);
+    renderingInfo.setStencilAttachmentFormat(context.m_DepthStencilImageFormat);
+
     InitPipelines(renderingInfo);
 
     return true;
 }
 
-void Renderer_VX::Shutdown() {
+void Renderer_VX::Destroy() {
     const auto device = m_Context->GetDevice();
 
     if (m_Sampler) {
@@ -173,9 +177,9 @@ void Renderer_VX::BeginFrame(vx::CommandBuffer commandBuffer, uint32_t frame) {
     m_CommandBuffer.cmdSetScissor(0, 1, &m_Scissor);
 
     const auto transform = Project(extent, Rml::Matrix4f::Identity());
-    m_CommandBuffer.cmdPushConstants(m_BasicPipelineLayout,
-                                     vk::ShaderStageFlagBits::bVertex,
-                                     FIELD(VsInput, transform), &transform);
+    m_CommandBuffer.cmdPushConstant(m_BasicPipelineLayout,
+                                    vk::ShaderStageFlagBits::bVertex,
+                                    VX_FIELD(VsInput, transform) = transform);
 
     m_CommandBuffer.cmdSetStencilTestEnable(false);
 }
@@ -244,9 +248,9 @@ void Renderer_VX::RenderGeometry(Rml::CompiledGeometryHandle geometry,
                  vk::ImageLayout::eShaderReadOnlyOptimal)});
     }
     m_CommandBuffer.cmdBindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
-    m_CommandBuffer.cmdPushConstants(pipelineLayout,
-                                     vk::ShaderStageFlagBits::bVertex,
-                                     FIELD(VsInput, translate), &translation);
+    m_CommandBuffer.cmdPushConstant(pipelineLayout,
+                                    vk::ShaderStageFlagBits::bVertex,
+                                    VX_FIELD(VsInput, translate) = translation);
     g->Draw(m_CommandBuffer);
 }
 
@@ -397,9 +401,9 @@ void Renderer_VX::SetTransform(const Rml::Matrix4f* transform) {
     const auto extent = m_Context->GetFrameExtent();
     const auto matrix =
         Project(extent, transform ? *transform : Rml::Matrix4f::Identity());
-    m_CommandBuffer.cmdPushConstants(m_BasicPipelineLayout,
-                                     vk::ShaderStageFlagBits::bVertex,
-                                     FIELD(VsInput, transform), &matrix);
+    m_CommandBuffer.cmdPushConstant(m_BasicPipelineLayout,
+                                    vk::ShaderStageFlagBits::bVertex,
+                                    VX_FIELD(VsInput, transform) = matrix);
 }
 
 void Renderer_VX::EnableClipMask(bool enable) {
@@ -442,9 +446,9 @@ void Renderer_VX::RenderToClipMask(Rml::ClipMaskOperation operation,
 
     m_CommandBuffer.cmdBindPipeline(vk::PipelineBindPoint::eGraphics,
                                     m_ClipPipeline);
-    m_CommandBuffer.cmdPushConstants(m_BasicPipelineLayout,
-                                     vk::ShaderStageFlagBits::bVertex,
-                                     FIELD(VsInput, translate), &translation);
+    m_CommandBuffer.cmdPushConstant(m_BasicPipelineLayout,
+                                    vk::ShaderStageFlagBits::bVertex,
+                                    VX_FIELD(VsInput, translate) = translation);
     m_CommandBuffer.cmdSetStencilOp(
         vk::StencilFaceFlagBits::eFrontAndBack, vk::StencilOp::eKeep,
         stencilPassOp, vk::StencilOp::eKeep, vk::CompareOp::eAlways);
@@ -566,9 +570,9 @@ void Renderer_VX::RenderShader(Rml::CompiledShaderHandle shader,
              vx::UniformBufferDescriptor(s->m_Buffer, 0, VK_WHOLE_SIZE)});
     m_CommandBuffer.cmdBindPipeline(vk::PipelineBindPoint::eGraphics,
                                     m_GradientPipeline);
-    m_CommandBuffer.cmdPushConstants(m_GradientPipelineLayout,
-                                     vk::ShaderStageFlagBits::bVertex,
-                                     FIELD(VsInput, translate), &translation);
+    m_CommandBuffer.cmdPushConstant(m_GradientPipelineLayout,
+                                    vk::ShaderStageFlagBits::bVertex,
+                                    VX_FIELD(VsInput, translate) = translation);
     g->Draw(m_CommandBuffer);
 }
 
@@ -756,12 +760,13 @@ Rml::TextureHandle Renderer_VX::CreateTexture(vk::Buffer buffer,
 
     const auto commandBuffer = m_Context->BeginTemp();
 
-    vx::ImageMemoryBarrierState imageMemoryBarrier(
-        t.m_Image, vx::allSubresourceRange(vk::ImageAspectFlagBits::bColor));
+    vx::ImageMemoryBarrierState imageMemoryBarrier;
+    imageMemoryBarrier.init(
+        t.m_Image, vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
 
-    imageMemoryBarrier.update(vk::ImageLayout::eTransferDstOptimal,
-                              vk::PipelineStageFlagBits2::bCopy,
-                              vk::AccessFlagBits2::bTransferWrite);
+    imageMemoryBarrier.updateLayout(vk::ImageLayout::eTransferDstOptimal);
+    imageMemoryBarrier.updateStageAccess(vk::PipelineStageFlagBits2::bCopy,
+                                         vk::AccessFlagBits2::bTransferWrite);
     commandBuffer.cmdPipelineBarriers(imageMemoryBarrier);
 
     vk::BufferImageCopy bufferImageCopy;
@@ -772,16 +777,17 @@ Rml::TextureHandle Renderer_VX::CreateTexture(vk::Buffer buffer,
                                        vk::ImageLayout::eTransferDstOptimal, 1,
                                        &bufferImageCopy);
 
-    imageMemoryBarrier.update(vk::ImageLayout::eShaderReadOnlyOptimal,
-                              vk::PipelineStageFlagBits2::bFragmentShader,
-                              vk::AccessFlagBits2::bShaderRead);
+    imageMemoryBarrier.updateLayout(vk::ImageLayout::eShaderReadOnlyOptimal);
+    imageMemoryBarrier.updateStageAccess(
+        vk::PipelineStageFlagBits2::bFragmentShader,
+        vk::AccessFlagBits2::bShaderRead);
     commandBuffer.cmdPipelineBarriers(imageMemoryBarrier);
 
     m_Context->EndTemp(commandBuffer);
 
     const auto imageViewInfo = vx::imageViewCreateInfo(
         vk::ImageViewType::e2D, t.m_Image, imageInfo.getFormat(),
-        vk::ImageAspectFlagBits::bColor);
+        vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
     t.m_ImageView = device.createImageView(imageViewInfo).get();
 
     return ~m_TextureResources.Create(t);

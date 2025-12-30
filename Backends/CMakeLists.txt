@@ -206,7 +206,6 @@ target_link_libraries(rmlui_backend_GLFW_VX INTERFACE rmlui_backend_common_heade
 target_compile_features(rmlui_backend_GLFW_VX INTERFACE cxx_std_20)
 target_include_directories(rmlui_backend_GLFW_VX
     INTERFACE
-        "D:/lib/vx"
 		"D:/lib/vklite/include"
 )
 
