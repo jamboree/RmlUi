@@ -293,6 +293,9 @@ public:
 	/// @param[in] name The name of the data model.
 	/// @return A constructor for the data model, or empty if it could not be found.
 	DataModelConstructor GetDataModel(const String& name);
+	/// Retrieves all data models in this context.
+	/// @return A map of all data models in this context, keyed by their name.
+	UnorderedMap<String, DataModelConstructor> GetDataModels() const;
 	/// Removes the given data model.
 	/// This also removes all data views, controllers, and bindings contained by the data model.
 	/// @warning Invalidates all handles and constructors pointing to the data model.
@@ -368,11 +371,11 @@ private:
 	bool mouse_active;
 
 	// The current state of Touches, required to implement proper inertia scrolling.
-	struct TouchState
-	{
+	struct TouchState {
 		bool scrolling_right = false;
 		bool scrolling_down = false;
 		Vector2f start_position;
+		Vector2f inertia_position;
 		Vector2f last_position;
 		Element* scroll_container = nullptr;
 		double scrolling_last_time = 0;
@@ -406,8 +409,7 @@ private:
 	// itself can't be part of it.
 	ElementSet drag_hover_chain;
 
-	using DataModels = UnorderedMap<String, UniquePtr<DataModel>>;
-	DataModels data_models;
+	UnorderedMap<String, UniquePtr<DataModel>> data_models;
 
 	UniquePtr<DataTypeRegister> default_data_type_register;
 
@@ -428,6 +430,8 @@ private:
 	// Updates the current hover elements, sending required events.
 	void UpdateHoverChain(Vector2i old_mouse_position, int key_modifier_state = 0, Dictionary* out_parameters = nullptr,
 		Dictionary* out_drag_parameters = nullptr);
+	// Resets the current active element and its chain.
+	void ResetActiveChain();
 
 	// Creates the drag clone from the given element. The old drag clone will be released if necessary.
 	void CreateDragClone(Element* element);
