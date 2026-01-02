@@ -107,12 +107,6 @@ struct GfxContext_VX {
         const vx::List<vk::QueueFamilyProperties>& queueFamilyProperties,
         vk::QueueFlags flags, vk::SurfaceKHR surface = {}) const;
 
-    vx::Device GetDevice() { return m_Device; }
-
-    vma::Allocator GetAllocator() { return m_Allocator; }
-
-    vk::Extent2D GetFrameExtent() { return m_FrameExtent; }
-
     vx::CommandBuffer BeginTemp();
 
     void EndTemp(vk::CommandBuffer commandBuffer);

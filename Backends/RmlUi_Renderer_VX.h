@@ -7,12 +7,12 @@ struct Renderer_VX : Rml::RenderInterface {
     Renderer_VX();
     ~Renderer_VX();
 
-    bool Init(GfxContext_VX& context);
+    bool Init(GfxContext_VX& gfx);
     void Destroy();
 
-    void BeginFrame(vx::CommandBuffer commandBuffer, uint32_t frame);
+    void BeginFrame(vx::CommandBuffer commandBuffer);
     void EndFrame();
-    void ResetResources(uint8_t useFlags);
+    void ResetAllResourceUse(uint8_t useFlags);
 
     /// Called by RmlUi when it wants to compile geometry it believes will be
     /// static for the forseeable future.
@@ -196,7 +196,7 @@ private:
     void Destroy(TextureResource& t);
     void Destroy(ShaderResource& s);
 
-    GfxContext_VX* m_Context = nullptr;
+    GfxContext_VX* m_Gfx = nullptr;
     ResourcePool<GeometryResource> m_GeometryResources;
     ResourcePool<TextureResource> m_TextureResources;
     ResourcePool<ShaderResource> m_ShaderResources;
@@ -213,7 +213,6 @@ private:
     vk::Sampler m_Sampler;
     vx::CommandBuffer m_CommandBuffer;
     vk::Rect2D m_Scissor;
-    uint32_t m_FrameNumber = 0;
     uint32_t m_StencilRef = 0;
     bool m_EnableScissor = false;
 };

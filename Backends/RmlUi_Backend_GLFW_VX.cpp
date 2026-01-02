@@ -85,7 +85,8 @@ struct BackendContext {
         if (m_Gfx.m_Device) {
             (void)m_Gfx.m_Device.waitIdle();
         }
-        m_Renderer.ResetResources((2u << GfxContext_VX::InFlightCount) - 2u);
+        m_Renderer.ResetAllResourceUse((2u << GfxContext_VX::InFlightCount) -
+                                       2u);
         m_Renderer.Destroy();
         m_Gfx.Destroy();
         if (m_Window) {
@@ -243,9 +244,9 @@ struct BackendContext {
 
     void BeginFrame() {
         m_Gfx.AcquireNextFrame();
-        m_Renderer.ResetResources(2u << m_Gfx.m_FrameNumber);
+        m_Renderer.ResetAllResourceUse(2u << m_Gfx.m_FrameNumber);
         auto commandBuffer = m_Gfx.BeginFrame(m_FrameExtent);
-        m_Renderer.BeginFrame(commandBuffer, m_Gfx.m_FrameNumber);
+        m_Renderer.BeginFrame(commandBuffer);
     }
 
     void EndFrame() {

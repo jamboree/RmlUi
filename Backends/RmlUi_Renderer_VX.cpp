@@ -88,10 +88,10 @@ struct Renderer_VX::GradientDescriptorSet {
 Renderer_VX::Renderer_VX() = default;
 Renderer_VX::~Renderer_VX() = default;
 
-bool Renderer_VX::Init(GfxContext_VX& context) {
-    m_Context = &context;
+bool Renderer_VX::Init(GfxContext_VX& gfx) {
+    m_Gfx = &gfx;
 
-    const auto device = m_Context->GetDevice();
+    const auto device = m_Gfx->m_Device;
 
     vk::SamplerCreateInfo samplerInfo;
     samplerInfo.setMagFilter(vk::Filter::eLinear);
@@ -105,9 +105,9 @@ bool Renderer_VX::Init(GfxContext_VX& context) {
 
     vk::PipelineRenderingCreateInfo renderingInfo;
     renderingInfo.setColorAttachmentCount(1);
-    renderingInfo.setColorAttachmentFormats(&context.m_SwapchainImageFormat);
-    renderingInfo.setDepthAttachmentFormat(context.m_DepthStencilImageFormat);
-    renderingInfo.setStencilAttachmentFormat(context.m_DepthStencilImageFormat);
+    renderingInfo.setColorAttachmentFormats(&gfx.m_SwapchainImageFormat);
+    renderingInfo.setDepthAttachmentFormat(gfx.m_DepthStencilImageFormat);
+    renderingInfo.setStencilAttachmentFormat(gfx.m_DepthStencilImageFormat);
 
     InitPipelines(renderingInfo);
 
@@ -115,7 +115,7 @@ bool Renderer_VX::Init(GfxContext_VX& context) {
 }
 
 void Renderer_VX::Destroy() {
-    const auto device = m_Context->GetDevice();
+    const auto device = m_Gfx->m_Device;
 
     if (m_Sampler) {
         device.destroySampler(m_Sampler);
@@ -165,13 +165,12 @@ static Rml::Matrix4f Project(vk::Extent2D extent,
     return correction_matrix * projection * transform;
 }
 
-void Renderer_VX::BeginFrame(vx::CommandBuffer commandBuffer, uint32_t frame) {
+void Renderer_VX::BeginFrame(vx::CommandBuffer commandBuffer) {
     m_CommandBuffer = commandBuffer;
-    m_FrameNumber = frame;
     m_StencilRef = 1;
     m_EnableScissor = false;
 
-    const auto extent = m_Context->GetFrameExtent();
+    const auto extent = m_Gfx->m_FrameExtent;
     m_Scissor.setOffset({});
     m_Scissor.setExtent(extent);
     m_CommandBuffer.cmdSetScissor(0, 1, &m_Scissor);
@@ -186,7 +185,7 @@ void Renderer_VX::BeginFrame(vx::CommandBuffer commandBuffer, uint32_t frame) {
 
 void Renderer_VX::EndFrame() { m_CommandBuffer = {}; }
 
-void Renderer_VX::ResetResources(uint8_t useFlags) {
+void Renderer_VX::ResetAllResourceUse(uint8_t useFlags) {
     m_GeometryResources.ReleaseAllUse(*this, useFlags);
     m_TextureResources.ReleaseAllUse(*this, useFlags);
     m_ShaderResources.ReleaseAllUse(*this, useFlags);
@@ -195,7 +194,7 @@ void Renderer_VX::ResetResources(uint8_t useFlags) {
 Rml::CompiledGeometryHandle
 Renderer_VX::CompileGeometry(Rml::Span<const Rml::Vertex> vertices,
                              Rml::Span<const int> indices) {
-    const auto allocator = m_Context->GetAllocator();
+    const auto allocator = m_Gfx->m_Allocator;
 
     GeometryResource g;
     g.m_VertexCount = uint32_t(vertices.size());
@@ -232,7 +231,7 @@ Renderer_VX::CompileGeometry(Rml::Span<const Rml::Vertex> vertices,
 void Renderer_VX::RenderGeometry(Rml::CompiledGeometryHandle geometry,
                                  Rml::Vector2f translation,
                                  Rml::TextureHandle texture) {
-    const uint8_t useFlag = 2u << m_FrameNumber;
+    const uint8_t useFlag = 2u << m_Gfx->m_FrameNumber;
     const auto g = m_GeometryResources.Use(~geometry, useFlag);
     auto pipeline = m_ColorPipeline;
     auto pipelineLayout = m_BasicPipelineLayout;
@@ -255,7 +254,7 @@ void Renderer_VX::RenderGeometry(Rml::CompiledGeometryHandle geometry,
 }
 
 void Renderer_VX::Destroy(GeometryResource& g) {
-    const auto allocator = m_Context->GetAllocator();
+    const auto allocator = m_Gfx->m_Allocator;
     allocator.destroyBuffer(g.m_Buffer, g.m_Allocation);
 }
 
@@ -322,7 +321,7 @@ Rml::TextureHandle Renderer_VX::LoadTexture(Rml::Vector2i& texture_dimensions,
     }
 
     auto image_src = buffer.get() + sizeof(TGAHeader);
-    StagingBuffer stagingBuffer{m_Context->GetAllocator()};
+    StagingBuffer stagingBuffer{m_Gfx->m_Allocator};
 
     auto image_dest = static_cast<uint8_t*>(stagingBuffer.Alloc(image_size));
 
@@ -362,15 +361,15 @@ Rml::TextureHandle Renderer_VX::LoadTexture(Rml::Vector2i& texture_dimensions,
 Rml::TextureHandle
 Renderer_VX::GenerateTexture(Rml::Span<const Rml::byte> source_data,
                              Rml::Vector2i source_dimensions) {
-    StagingBuffer stagingBuffer{m_Context->GetAllocator()};
+    StagingBuffer stagingBuffer{m_Gfx->m_Allocator};
     std::memcpy(stagingBuffer.Alloc(source_data.size()), source_data.data(),
                 source_data.size());
     return CreateTexture(stagingBuffer.m_Buffer, source_dimensions);
 }
 
 void Renderer_VX::Destroy(TextureResource& t) {
-    const auto device = m_Context->GetDevice();
-    const auto allocator = m_Context->GetAllocator();
+    const auto device = m_Gfx->m_Device;
+    const auto allocator = m_Gfx->m_Allocator;
     device.destroyImageView(t.m_ImageView);
     allocator.destroyImage(t.m_Image, t.m_Allocation);
 }
@@ -384,7 +383,7 @@ void Renderer_VX::EnableScissorRegion(bool enable) {
     m_EnableScissor = enable;
     if (!m_EnableScissor) {
         m_Scissor.setOffset({});
-        m_Scissor.setExtent(m_Context->GetFrameExtent());
+        m_Scissor.setExtent(m_Gfx->m_FrameExtent);
         m_CommandBuffer.cmdSetScissor(0, 1, &m_Scissor);
     }
 }
@@ -398,7 +397,7 @@ void Renderer_VX::SetScissorRegion(Rml::Rectanglei region) {
 }
 
 void Renderer_VX::SetTransform(const Rml::Matrix4f* transform) {
-    const auto extent = m_Context->GetFrameExtent();
+    const auto extent = m_Gfx->m_FrameExtent;
     const auto matrix =
         Project(extent, transform ? *transform : Rml::Matrix4f::Identity());
     m_CommandBuffer.cmdPushConstant(m_BasicPipelineLayout,
@@ -413,7 +412,7 @@ void Renderer_VX::EnableClipMask(bool enable) {
 void Renderer_VX::RenderToClipMask(Rml::ClipMaskOperation operation,
                                    Rml::CompiledGeometryHandle geometry,
                                    Rml::Vector2f translation) {
-    const uint8_t useFlag = 2u << m_FrameNumber;
+    const uint8_t useFlag = 2u << m_Gfx->m_FrameNumber;
     const auto g = m_GeometryResources.Use(~geometry, useFlag);
 
     bool clearStencil = false;
@@ -528,7 +527,7 @@ Renderer_VX::CompileShader(const Rml::String& name,
         uniform.func |= GradientUniform::REPEATING;
     uniform.ApplyColorStopList(parameters);
 
-    const auto allocator = m_Context->GetAllocator();
+    const auto allocator = m_Gfx->m_Allocator;
 
     ShaderResource s;
 
@@ -559,7 +558,7 @@ void Renderer_VX::RenderShader(Rml::CompiledShaderHandle shader,
                                Rml::CompiledGeometryHandle geometry,
                                Rml::Vector2f translation,
                                Rml::TextureHandle /*texture*/) {
-    const uint8_t useFlag = 2u << m_FrameNumber;
+    const uint8_t useFlag = 2u << m_Gfx->m_FrameNumber;
     const auto s = m_ShaderResources.Use(~shader, useFlag);
     const auto g = m_GeometryResources.Use(~geometry, useFlag);
 
@@ -577,7 +576,7 @@ void Renderer_VX::RenderShader(Rml::CompiledShaderHandle shader,
 }
 
 void Renderer_VX::Destroy(ShaderResource& s) {
-    const auto allocator = m_Context->GetAllocator();
+    const auto allocator = m_Gfx->m_Allocator;
     allocator.destroyBuffer(s.m_Buffer, s.m_Allocation);
 }
 
@@ -587,7 +586,7 @@ void Renderer_VX::ReleaseShader(Rml::CompiledShaderHandle shader) {
 }
 
 void Renderer_VX::InitPipelineLayouts() {
-    const auto device = m_Context->GetDevice();
+    const auto device = m_Gfx->m_Device;
 
     check(device.createTypedDescriptorSetLayout(
         &m_TextureDescriptorSetLayout,
@@ -623,7 +622,7 @@ void Renderer_VX::InitPipelineLayouts() {
 
 void Renderer_VX::InitPipelines(
     vk::PipelineRenderingCreateInfo& renderingInfo) {
-    const auto device = m_Context->GetDevice();
+    const auto device = m_Gfx->m_Device;
 
     const auto clipVertShader =
         device.createShaderModule(shader_vert_clip).get();
@@ -741,8 +740,8 @@ void Renderer_VX::InitPipelines(
 
 Rml::TextureHandle Renderer_VX::CreateTexture(vk::Buffer buffer,
                                               Rml::Vector2i dimensions) {
-    const auto device = m_Context->GetDevice();
-    const auto allocator = m_Context->GetAllocator();
+    const auto device = m_Gfx->m_Device;
+    const auto allocator = m_Gfx->m_Allocator;
 
     TextureResource t;
 
@@ -758,7 +757,7 @@ Rml::TextureHandle Renderer_VX::CreateTexture(vk::Buffer buffer,
     t.m_Image =
         allocator.createImage(imageInfo, allocationInfo, &t.m_Allocation).get();
 
-    const auto commandBuffer = m_Context->BeginTemp();
+    const auto commandBuffer = m_Gfx->BeginTemp();
 
     vx::ImageMemoryBarrierState imageMemoryBarrier;
     imageMemoryBarrier.init(
@@ -783,7 +782,7 @@ Rml::TextureHandle Renderer_VX::CreateTexture(vk::Buffer buffer,
         vk::AccessFlagBits2::bShaderRead);
     commandBuffer.cmdPipelineBarriers(imageMemoryBarrier);
 
-    m_Context->EndTemp(commandBuffer);
+    m_Gfx->EndTemp(commandBuffer);
 
     const auto imageViewInfo = vx::imageViewCreateInfo(
         vk::ImageViewType::e2D, t.m_Image, imageInfo.getFormat(),
