@@ -183,9 +183,67 @@ void Renderer_VX::BeginFrame(vx::CommandBuffer commandBuffer) {
                                     VX_FIELD(VsInput, transform) = transform);
 
     m_CommandBuffer.cmdSetStencilTestEnable(false);
+
+    m_SurfaceManager.UpdateFrameSize(*m_Gfx, extent);
+    const auto topLayer = m_SurfaceManager.PushLayer(*m_Gfx);
+    BeginLayer(m_SurfaceManager.GetLayer(topLayer));
 }
 
-void Renderer_VX::EndFrame() { m_CommandBuffer = {}; }
+void Renderer_VX::EndFrame() {
+    m_CommandBuffer.cmdEndRendering();
+
+    vx::ImageMemoryBarrierState imageBarriers[2];
+    auto& [srcImageBarrier, dstImageBarrier] = imageBarriers;
+
+    srcImageBarrier.init(GetTopLayer().m_Image,
+                         vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
+    srcImageBarrier.setOldLayout(vk::ImageLayout::eAttachmentOptimal);
+    srcImageBarrier.setNewLayout(vk::ImageLayout::eTransferSrcOptimal);
+    srcImageBarrier.setDstStageAccess(vk::PipelineStageFlagBits2::bTransfer,
+                                      vk::AccessFlagBits2::bTransferRead);
+
+    dstImageBarrier.init(m_Gfx->CurrentFrameResource().m_Image,
+                         vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
+    dstImageBarrier.updateLayout(vk::ImageLayout::eTransferDstOptimal);
+    dstImageBarrier.updateStageAccess(vk::PipelineStageFlagBits2::bTransfer,
+                                      vk::AccessFlagBits2::bTransferWrite);
+    m_CommandBuffer.cmdPipelineBarriers(rawIns(imageBarriers));
+
+    const auto subresource =
+        vx::subresourceLayers(vk::ImageAspectFlagBits::bColor, 1);
+    const vk::Extent3D extent{m_Gfx->m_FrameExtent.width,
+                              m_Gfx->m_FrameExtent.height, 1};
+    if (m_Gfx->m_SampleCount == vk::SampleCountFlagBits::b1) {
+        vk::CopyImageInfo2 copyImageInfo;
+        copyImageInfo.setSrcImage(srcImageBarrier.getImage());
+        copyImageInfo.setDstImage(dstImageBarrier.getImage());
+        copyImageInfo.setSrcImageLayout(srcImageBarrier.getNewLayout());
+        copyImageInfo.setDstImageLayout(dstImageBarrier.getNewLayout());
+        copyImageInfo.setRegionCount(1);
+        vk::ImageCopy2 imageCopyRegion;
+        imageCopyRegion.setSrcSubresource(subresource);
+        imageCopyRegion.setDstSubresource(subresource);
+        imageCopyRegion.setExtent(extent);
+        copyImageInfo.setRegions(&imageCopyRegion);
+        m_CommandBuffer.cmdCopyImage2(copyImageInfo);
+    } else {
+        vk::ResolveImageInfo2 resolveImageInfo;
+        resolveImageInfo.setSrcImage(srcImageBarrier.getImage());
+        resolveImageInfo.setDstImage(dstImageBarrier.getImage());
+        resolveImageInfo.setSrcImageLayout(srcImageBarrier.getNewLayout());
+        resolveImageInfo.setDstImageLayout(dstImageBarrier.getNewLayout());
+        resolveImageInfo.setRegionCount(1);
+        vk::ImageResolve2 imageResolveRegion;
+        imageResolveRegion.setSrcSubresource(subresource);
+        imageResolveRegion.setDstSubresource(subresource);
+        imageResolveRegion.setExtent(extent);
+        resolveImageInfo.setRegions(&imageResolveRegion);
+        m_CommandBuffer.cmdResolveImage2(resolveImageInfo);
+    }
+
+    m_CommandBuffer = {};
+    m_SurfaceManager.PopLayer();
+}
 
 void Renderer_VX::ResetAllResourceUse(uint8_t useFlags) {
     m_GeometryResources.ReleaseAllUse(*this, useFlags);
@@ -582,9 +640,91 @@ void Renderer_VX::Destroy(ShaderResource& s) {
     allocator.destroyBuffer(s.m_Buffer, s.m_Allocation);
 }
 
+void Renderer_VX::BeginLayer(const ImageAttachment& surface) {
+    vx::ImageMemoryBarrierState imageMemoryBarriers[2];
+    auto& [colorImageBarrier, depthStencilImageBarrier] = imageMemoryBarriers;
+
+    colorImageBarrier.init(
+        surface.m_Image, vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
+    colorImageBarrier.updateLayout(vk::ImageLayout::eAttachmentOptimal);
+    colorImageBarrier.setSrcStageAccess(
+        vk::PipelineStageFlagBits2::bFragmentShader,
+        vk::AccessFlagBits2::bShaderRead);
+    colorImageBarrier.setDstStageAccess(
+        vk::PipelineStageFlagBits2::bColorAttachmentOutput,
+        vk::AccessFlagBits2::bColorAttachmentWrite);
+
+    depthStencilImageBarrier.init(
+        m_Gfx->m_DepthStencilImage.m_Image,
+        vx::subresourceRange(vk::ImageAspectFlagBits::bDepth |
+                             vk::ImageAspectFlagBits::bStencil));
+    depthStencilImageBarrier.setSrcStageAccess(
+        vk::PipelineStageFlagBits2::bLateFragmentTests,
+        vk::AccessFlagBits2::bDepthStencilAttachmentWrite);
+    depthStencilImageBarrier.setOldLayout(vk::ImageLayout::eAttachmentOptimal);
+    depthStencilImageBarrier.setNewLayout(vk::ImageLayout::eAttachmentOptimal);
+    depthStencilImageBarrier.setDstStageAccess(
+        vk::PipelineStageFlagBits2::bEarlyFragmentTests |
+            vk::PipelineStageFlagBits2::bLateFragmentTests,
+        vk::AccessFlagBits2::bDepthStencilAttachmentRead |
+            vk::AccessFlagBits2::bDepthStencilAttachmentWrite);
+
+    m_CommandBuffer.cmdPipelineBarriers(rawIns(imageMemoryBarriers));
+
+    vk::RenderingAttachmentInfo colorAttachmentInfo;
+    colorAttachmentInfo.setImageView(surface.m_ImageView);
+    colorAttachmentInfo.setImageLayout(colorImageBarrier.getNewLayout());
+    colorAttachmentInfo.setLoadOp(vk::AttachmentLoadOp::eClear);
+    colorAttachmentInfo.setStoreOp(vk::AttachmentStoreOp::eStore);
+    colorAttachmentInfo.setClearValue({.color = vk::ClearColorValue()});
+
+    vk::RenderingAttachmentInfo depthStencilAttachmentInfo;
+    depthStencilAttachmentInfo.setImageLayout(
+        depthStencilImageBarrier.getNewLayout());
+    depthStencilAttachmentInfo.setLoadOp(vk::AttachmentLoadOp::eClear);
+    depthStencilAttachmentInfo.setStoreOp(vk::AttachmentStoreOp::eDontCare);
+    depthStencilAttachmentInfo.setImageView(
+        m_Gfx->m_DepthStencilImage.m_ImageView);
+    depthStencilAttachmentInfo.setClearValue(
+        {.depthStencil = vk::ClearDepthStencilValue{1.0f, 0}});
+
+    const vk::Rect2D renderArea{{0, 0}, m_Gfx->m_FrameExtent};
+
+    vk::RenderingInfo renderingInfo;
+    renderingInfo.setRenderArea(renderArea);
+    renderingInfo.setLayerCount(1);
+    renderingInfo.setColorAttachmentCount(1);
+    renderingInfo.setColorAttachments(&colorAttachmentInfo);
+    renderingInfo.setDepthAttachment(&depthStencilAttachmentInfo);
+    renderingInfo.setStencilAttachment(&depthStencilAttachmentInfo);
+
+    m_CommandBuffer.cmdBeginRendering(renderingInfo);
+}
+
 void Renderer_VX::ReleaseShader(Rml::CompiledShaderHandle shader) {
     RMLUI_ASSERT(shader);
     m_ShaderResources.Release(*this, ~shader);
+}
+
+Rml::LayerHandle Renderer_VX::PushLayer() {
+    m_CommandBuffer.cmdEndRendering();
+
+    const auto topLayer = m_SurfaceManager.PushLayer(*m_Gfx);
+    BeginLayer(m_SurfaceManager.GetLayer(topLayer));
+    return topLayer;
+}
+
+void Renderer_VX::CompositeLayers(
+    Rml::LayerHandle source, Rml::LayerHandle destination,
+    Rml::BlendMode blend_mode,
+    Rml::Span<const Rml::CompiledFilterHandle> filters) {
+    // TODO
+}
+
+void Renderer_VX::PopLayer() {
+    m_CommandBuffer.cmdEndRendering();
+    m_SurfaceManager.PopLayer();
+    BeginLayer(GetTopLayer());
 }
 
 void Renderer_VX::InitPipelineLayouts() {
@@ -816,7 +956,7 @@ Rml::LayerHandle Renderer_VX::SurfaceManager::PushLayer(GfxContext_VX& gfx) {
         m_layers[m_layers_size] = gfx.CreateImageAttachment(
             gfx.m_SwapchainImageFormat,
             vk::ImageUsageFlagBits::bColorAttachment |
-                vk::ImageUsageFlagBits::bSampled,
+                vk::ImageUsageFlagBits::bTransferSrc,
             vk::ImageAspectFlagBits::bColor, gfx.m_SampleCount);
     }
 

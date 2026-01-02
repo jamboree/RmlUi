@@ -70,6 +70,13 @@ struct Renderer_VX : Rml::RenderInterface {
     /// Called by RmlUi when it no longer needs a previously compiled shader.
     void ReleaseShader(Rml::CompiledShaderHandle shader) override;
 
+    Rml::LayerHandle PushLayer() override;
+    void CompositeLayers(
+        Rml::LayerHandle source, Rml::LayerHandle destination,
+        Rml::BlendMode blend_mode,
+        Rml::Span<const Rml::CompiledFilterHandle> filters) override;
+    void PopLayer() override;
+
 private:
     struct TextureDescriptorSet;
     struct GradientDescriptorSet;
@@ -210,6 +217,12 @@ private:
     void Destroy(GeometryResource& g);
     void Destroy(TextureResource& t);
     void Destroy(ShaderResource& s);
+
+    void BeginLayer(const ImageAttachment& surface);
+
+    const ImageAttachment& GetTopLayer() const {
+        return m_SurfaceManager.GetLayer(m_SurfaceManager.GetTopLayerHandle());
+    }
 
     GfxContext_VX* m_Gfx = nullptr;
     ResourcePool<GeometryResource> m_GeometryResources;

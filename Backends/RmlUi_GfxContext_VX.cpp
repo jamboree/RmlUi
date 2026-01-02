@@ -132,20 +132,12 @@ vx::CommandBuffer GfxContext_VX::BeginFrame(vk::Extent2D extent) {
     beginInfo.setFlags(vk::CommandBufferUsageFlagBits::bOneTimeSubmit);
     check(commandBuffer.begin(beginInfo));
 
-    vx::ImageMemoryBarrierState imageMemoryBarriers[2];
-    auto& [colorImageBarrier, depthStencilImageBarrier] = imageMemoryBarriers;
-    colorImageBarrier.init(
-        m_FrameResources[m_ImageIndex].m_Image,
-        vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
+    vx::ImageMemoryBarrierState depthStencilImageBarrier;
+
     depthStencilImageBarrier.init(
         m_DepthStencilImage.m_Image,
         vx::subresourceRange(vk::ImageAspectFlagBits::bDepth |
                              vk::ImageAspectFlagBits::bStencil));
-
-    colorImageBarrier.updateLayout(vk::ImageLayout::eAttachmentOptimal);
-    colorImageBarrier.updateStageAccess(
-        vk::PipelineStageFlagBits2::bColorAttachmentOutput,
-        vk::AccessFlagBits2::bColorAttachmentWrite);
     depthStencilImageBarrier.setSrcStageAccess(
         vk::PipelineStageFlagBits2::bLateFragmentTests,
         vk::AccessFlagBits2::bDepthStencilAttachmentWrite);
@@ -155,8 +147,17 @@ vx::CommandBuffer GfxContext_VX::BeginFrame(vk::Extent2D extent) {
             vk::PipelineStageFlagBits2::bLateFragmentTests,
         vk::AccessFlagBits2::bDepthStencilAttachmentRead |
             vk::AccessFlagBits2::bDepthStencilAttachmentWrite);
-    commandBuffer.cmdPipelineBarriers(rawIns(imageMemoryBarriers));
 
+    commandBuffer.cmdPipelineBarriers(depthStencilImageBarrier);
+
+    vk::Viewport viewport;
+    viewport.setWidth(float(m_FrameExtent.width));
+    viewport.setHeight(float(m_FrameExtent.height));
+    viewport.setMinDepth(0.f);
+    viewport.setMaxDepth(1.f);
+    commandBuffer.cmdSetViewport(0, 1, &viewport);
+
+#if 0
     vk::RenderingAttachmentInfo colorAttachmentInfo;
     colorAttachmentInfo.setImageLayout(colorImageBarrier.getNewLayout());
     colorAttachmentInfo.setLoadOp(vk::AttachmentLoadOp::eClear);
@@ -183,32 +184,24 @@ vx::CommandBuffer GfxContext_VX::BeginFrame(vk::Extent2D extent) {
     renderingInfo.setStencilAttachment(&depthStencilAttachmentInfo);
 
     commandBuffer.cmdBeginRendering(renderingInfo);
-
-    vk::Viewport viewport;
-    viewport.setWidth(float(m_FrameExtent.getWidth()));
-    viewport.setHeight(float(m_FrameExtent.getHeight()));
-    viewport.setMinDepth(0.f);
-    viewport.setMaxDepth(1.f);
-    commandBuffer.cmdSetViewport(0, 1, &viewport);
+#endif
     return commandBuffer;
 }
 
 void GfxContext_VX::EndFrame() {
     const auto& acquireSemaphore = m_AcquireSemaphores[m_FrameNumber];
-    const auto& renderSemaphore =
-        m_FrameResources[m_ImageIndex].m_RenderSemaphore;
+    const auto& renderSemaphore = CurrentFrameResource().m_RenderSemaphore;
     const auto commandBuffer = m_CommandBuffers[m_FrameNumber];
 
-    commandBuffer.cmdEndRendering();
     {
         vx::ImageMemoryBarrierState imageMemoryBarrier;
         imageMemoryBarrier.init(
-            m_FrameResources[m_ImageIndex].m_Image,
+            CurrentFrameResource().m_Image,
             vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
-        imageMemoryBarrier.setOldLayout(vk::ImageLayout::eAttachmentOptimal);
+        imageMemoryBarrier.setOldLayout(vk::ImageLayout::eTransferDstOptimal);
         imageMemoryBarrier.setSrcStageAccess(
-            vk::PipelineStageFlagBits2::bColorAttachmentOutput,
-            vk::AccessFlagBits2::bColorAttachmentWrite);
+            vk::PipelineStageFlagBits2::bTransfer,
+            vk::AccessFlagBits2::bTransferWrite);
         imageMemoryBarrier.setNewLayout(vk::ImageLayout::ePresentSrcKHR);
         imageMemoryBarrier.setDstStageAccess(
             vk::PipelineStageFlagBits2::bAllCommands,

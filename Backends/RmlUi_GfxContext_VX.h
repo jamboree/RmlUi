@@ -67,10 +67,14 @@ struct GfxContext_VX {
 
     void Destroy();
 
+    const FrameResource& CurrentFrameResource() const {
+        return m_FrameResources[m_ImageIndex];
+    }
+
     void AcquireNextFrame() {
         m_FrameNumber = (m_FrameNumber + 1) % InFlightCount;
         check(m_Device.waitForFences(1, m_RenderFences + m_FrameNumber, true,
-            UINT64_MAX));
+                                     UINT64_MAX));
     }
 
     vx::CommandBuffer BeginFrame(vk::Extent2D extent);
