@@ -117,6 +117,8 @@ bool Renderer_VX::Init(GfxContext_VX& gfx) {
 void Renderer_VX::Destroy() {
     const auto device = m_Gfx->m_Device;
 
+    m_SurfaceManager.Destroy(*m_Gfx);
+
     if (m_Sampler) {
         device.destroySampler(m_Sampler);
     }
@@ -790,4 +792,57 @@ Rml::TextureHandle Renderer_VX::CreateTexture(vk::Buffer buffer,
     t.m_ImageView = device.createImageView(imageViewInfo).get();
 
     return ~m_TextureResources.Create(t);
+}
+
+Renderer_VX::SurfaceManager::~SurfaceManager() { std::free(m_layers); }
+
+void Renderer_VX::SurfaceManager::Destroy(GfxContext_VX& gfx) {
+    for (auto& image : std::span(m_layers, m_layers_capacity)) {
+        gfx.DestroyImageAttachment(image);
+    }
+    m_layers_capacity = 0;
+    for (auto& image : m_postprocess) {
+        gfx.DestroyImageAttachment(image);
+    }
+}
+
+Rml::LayerHandle Renderer_VX::SurfaceManager::PushLayer(GfxContext_VX& gfx) {
+    RMLUI_ASSERT(m_layers_size <= m_layers_capacity);
+
+    if (m_layers_size == m_layers_capacity) {
+        ++m_layers_capacity;
+        m_layers = static_cast<ImageAttachment*>(std::realloc(
+            m_layers, sizeof(ImageAttachment) * m_layers_capacity));
+        m_layers[m_layers_size] = gfx.CreateImageAttachment(
+            gfx.m_SwapchainImageFormat,
+            vk::ImageUsageFlagBits::bColorAttachment |
+                vk::ImageUsageFlagBits::bSampled,
+            vk::ImageAspectFlagBits::bColor, gfx.m_SampleCount);
+    }
+
+    ++m_layers_size;
+    return GetTopLayerHandle();
+}
+
+const ImageAttachment&
+Renderer_VX::SurfaceManager::GetPostprocess(GfxContext_VX& gfx,
+                                            Postprocess id) {
+    RMLUI_ASSERT(std::to_underlying(id) < std::size(m_postprocess));
+    auto& fb = m_postprocess[std::to_underlying(id)];
+    if (!fb.m_Image) {
+        fb = gfx.CreateImageAttachment(
+            gfx.m_SwapchainImageFormat,
+            vk::ImageUsageFlagBits::bColorAttachment |
+                vk::ImageUsageFlagBits::bSampled,
+            vk::ImageAspectFlagBits::bColor, vk::SampleCountFlagBits::b1);
+    }
+    return fb;
+}
+
+void Renderer_VX::SurfaceManager::UpdateFrameSize(GfxContext_VX& gfx,
+                                                  vk::Extent2D extent) {
+    if (m_extent.width != extent.width || m_extent.height != extent.height) {
+        m_extent = extent;
+        Destroy(gfx);
+    }
 }

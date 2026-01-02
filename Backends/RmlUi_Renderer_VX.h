@@ -147,42 +147,57 @@ private:
         Elem* m_Elems = nullptr;
     };
 
-    struct RenderLayerStack {
-        enum class Postprocess {
-            Primary,
-            Secondary,
-            Tertiary,
-            BlendMask,
-        };
+    enum class Postprocess {
+        Primary,
+        Secondary,
+        Tertiary,
+        BlendMask,
+    };
+
+    struct SurfaceManager {
+        ~SurfaceManager();
+
+        void Destroy(GfxContext_VX& gfx);
+
         // Push a new layer. All references to previously retrieved layers are
         // invalidated.
-        Rml::LayerHandle PushLayer(GfxContext_VX& ctx);
+        Rml::LayerHandle PushLayer(GfxContext_VX& gfx);
 
         // Pop the top layer. All references to previously retrieved layers are
         // invalidated.
-        void PopLayer();
+        void PopLayer() {
+            RMLUI_ASSERT(m_layers_size != 0);
+            --m_layers_size;
+        }
 
-        const ImageAttachment& GetLayer(Rml::LayerHandle layer) const;
-        const ImageAttachment& GetTopLayer() const;
-        Rml::LayerHandle GetTopLayerHandle() const;
+        const ImageAttachment& GetLayer(Rml::LayerHandle layer) const {
+            RMLUI_ASSERT((size_t)layer < (size_t)m_layers_size);
+            return m_layers[layer];
+        }
 
-        const ImageAttachment& GetPostprocess(Postprocess id);
+        Rml::LayerHandle GetTopLayerHandle() const {
+            RMLUI_ASSERT(m_layers_size != 0);
+            return Rml::LayerHandle(m_layers_size - 1);
+        }
 
-        void SwapPostprocessPrimarySecondary();
+        const ImageAttachment& GetPostprocess(GfxContext_VX& gfx,
+                                              Postprocess id);
 
-        void BeginFrame(vk::Extent2D extent);
-        void EndFrame();
+        void SwapPostprocessPrimarySecondary() {
+            std::swap(m_postprocess[0], m_postprocess[1]);
+        }
+
+        void UpdateFrameSize(GfxContext_VX& gfx, vk::Extent2D extent);
 
     private:
-        void DestroyFramebuffers();
-
         vk::Extent2D m_extent;
 
         // The number of active layers is manually tracked since we re-use the
         // framebuffers stored in the fb_layers stack.
-        int m_layers_size = 0;
+        unsigned m_layers_size = 0;
+        unsigned m_layers_capacity = 0;
 
-        std::vector<ImageAttachment> m_layers;
+        ImageAttachment* m_layers = nullptr;
         ImageAttachment m_postprocess[4];
     };
 
@@ -200,6 +215,7 @@ private:
     ResourcePool<GeometryResource> m_GeometryResources;
     ResourcePool<TextureResource> m_TextureResources;
     ResourcePool<ShaderResource> m_ShaderResources;
+    SurfaceManager m_SurfaceManager;
     vx::DescriptorSetLayout<TextureDescriptorSet> m_TextureDescriptorSetLayout;
     vx::DescriptorSetLayout<GradientDescriptorSet>
         m_GradientDescriptorSetLayout;
