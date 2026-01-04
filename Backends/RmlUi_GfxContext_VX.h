@@ -77,7 +77,9 @@ struct GfxContext_VX {
                                      UINT64_MAX));
     }
 
-    vx::CommandBuffer BeginFrame(vk::Extent2D extent);
+    bool InitFrame();
+
+    vx::CommandBuffer BeginFrame();
 
     void EndFrame();
 

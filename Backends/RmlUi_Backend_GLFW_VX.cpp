@@ -119,6 +119,7 @@ struct BackendContext {
             if (m_FrameExtent.width) {
                 if (m_Gfx.m_RenderTargetOutdated) {
                     m_Gfx.RecreateRenderTarget(m_FrameExtent);
+                    m_Renderer.ResetRenderTarget();
                 }
                 break;
             }
@@ -245,7 +246,11 @@ struct BackendContext {
     void BeginFrame() {
         m_Gfx.AcquireNextFrame();
         m_Renderer.ResetAllResourceUse(2u << m_Gfx.m_FrameNumber);
-        auto commandBuffer = m_Gfx.BeginFrame(m_FrameExtent);
+        if (m_Gfx.InitFrame()) {
+            m_Gfx.RecreateRenderTarget(m_FrameExtent);
+            m_Renderer.ResetRenderTarget();
+        }
+        auto commandBuffer = m_Gfx.BeginFrame();
         m_Renderer.BeginFrame(commandBuffer);
     }
 

@@ -113,13 +113,13 @@ void GfxContext_VX::Destroy() {
     }
 }
 
-vx::CommandBuffer GfxContext_VX::BeginFrame(vk::Extent2D extent) {
+bool GfxContext_VX::InitFrame() {
     const auto& acquireSemaphore = m_AcquireSemaphores[m_FrameNumber];
     m_Allocator.setCurrentFrameIndex(m_FrameNumber);
     if (auto ret = m_Device.acquireNextImageKHR(m_Swapchain, UINT64_MAX,
                                                 acquireSemaphore);
         ret.result == vk::Result::eErrorOutOfDateKHR) [[unlikely]] {
-        RecreateRenderTarget(extent);
+        return true;
     } else {
         if (ret.result == vk::Result::eSuboptimalKHR) {
             ret.result = vk::Result::eSuccess;
@@ -127,6 +127,10 @@ vx::CommandBuffer GfxContext_VX::BeginFrame(vk::Extent2D extent) {
         }
         m_ImageIndex = ret.get();
     }
+    return false;
+}
+
+vx::CommandBuffer GfxContext_VX::BeginFrame() {
     const vx::CommandBuffer commandBuffer{m_CommandBuffers[m_FrameNumber]};
     vk::CommandBufferBeginInfo beginInfo;
     beginInfo.setFlags(vk::CommandBufferUsageFlagBits::bOneTimeSubmit);

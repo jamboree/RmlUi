@@ -12,6 +12,7 @@ struct Renderer_VX : Rml::RenderInterface {
 
     void BeginFrame(vx::CommandBuffer commandBuffer);
     void EndFrame();
+    void ResetRenderTarget();
     void ResetAllResourceUse(uint8_t useFlags);
 
     /// Called by RmlUi when it wants to compile geometry it believes will be
@@ -194,11 +195,7 @@ private:
             std::swap(m_postprocess[0], m_postprocess[1]);
         }
 
-        void UpdateFrameSize(GfxContext_VX& gfx, vk::Extent2D extent);
-
     private:
-        vk::Extent2D m_extent;
-
         // The number of active layers is manually tracked since we re-use the
         // framebuffers stored in the fb_layers stack.
         unsigned m_layers_size = 0;

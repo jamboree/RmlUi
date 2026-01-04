@@ -184,7 +184,6 @@ void Renderer_VX::BeginFrame(vx::CommandBuffer commandBuffer) {
 
     m_CommandBuffer.cmdSetStencilTestEnable(false);
 
-    m_SurfaceManager.UpdateFrameSize(*m_Gfx, extent);
     const auto topLayer = m_SurfaceManager.PushLayer(*m_Gfx);
     BeginLayer(m_SurfaceManager.GetLayer(topLayer));
 }
@@ -204,8 +203,8 @@ void Renderer_VX::EndFrame() {
 
     dstImageBarrier.init(m_Gfx->CurrentFrameResource().m_Image,
                          vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
-    dstImageBarrier.updateLayout(vk::ImageLayout::eTransferDstOptimal);
-    dstImageBarrier.updateStageAccess(vk::PipelineStageFlagBits2::bTransfer,
+    dstImageBarrier.setNewLayout(vk::ImageLayout::eTransferDstOptimal);
+    dstImageBarrier.setDstStageAccess(vk::PipelineStageFlagBits2::bTransfer,
                                       vk::AccessFlagBits2::bTransferWrite);
     m_CommandBuffer.cmdPipelineBarriers(rawIns(imageBarriers));
 
@@ -244,6 +243,8 @@ void Renderer_VX::EndFrame() {
     m_CommandBuffer = {};
     m_SurfaceManager.PopLayer();
 }
+
+void Renderer_VX::ResetRenderTarget() { m_SurfaceManager.Destroy(*m_Gfx); }
 
 void Renderer_VX::ResetAllResourceUse(uint8_t useFlags) {
     m_GeometryResources.ReleaseAllUse(*this, useFlags);
@@ -646,7 +647,7 @@ void Renderer_VX::BeginLayer(const ImageAttachment& surface) {
 
     colorImageBarrier.init(
         surface.m_Image, vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
-    colorImageBarrier.updateLayout(vk::ImageLayout::eAttachmentOptimal);
+    colorImageBarrier.setNewLayout(vk::ImageLayout::eAttachmentOptimal);
     colorImageBarrier.setSrcStageAccess(
         vk::PipelineStageFlagBits2::bFragmentShader,
         vk::AccessFlagBits2::bShaderRead);
@@ -905,8 +906,8 @@ Rml::TextureHandle Renderer_VX::CreateTexture(vk::Buffer buffer,
     imageMemoryBarrier.init(
         t.m_Image, vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
 
-    imageMemoryBarrier.updateLayout(vk::ImageLayout::eTransferDstOptimal);
-    imageMemoryBarrier.updateStageAccess(vk::PipelineStageFlagBits2::bCopy,
+    imageMemoryBarrier.setNewLayout(vk::ImageLayout::eTransferDstOptimal);
+    imageMemoryBarrier.setDstStageAccess(vk::PipelineStageFlagBits2::bCopy,
                                          vk::AccessFlagBits2::bTransferWrite);
     commandBuffer.cmdPipelineBarriers(imageMemoryBarrier);
 
@@ -977,12 +978,4 @@ Renderer_VX::SurfaceManager::GetPostprocess(GfxContext_VX& gfx,
             vk::ImageAspectFlagBits::bColor, vk::SampleCountFlagBits::b1);
     }
     return fb;
-}
-
-void Renderer_VX::SurfaceManager::UpdateFrameSize(GfxContext_VX& gfx,
-                                                  vk::Extent2D extent) {
-    if (m_extent.width != extent.width || m_extent.height != extent.height) {
-        m_extent = extent;
-        Destroy(gfx);
-    }
 }
