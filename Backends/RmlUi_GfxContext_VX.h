@@ -13,9 +13,12 @@ struct PhysicalDeviceInfo {
     bool HasExtension(std::string_view name) const noexcept;
 };
 
-struct ImageAttachment {
+struct ImagePair {
     vk::Image m_Image;
     vk::ImageView m_ImageView;
+};
+
+struct ImageAttachment : ImagePair {
     vma::Allocation m_Allocation;
 };
 
@@ -30,7 +33,8 @@ struct GfxContext_VX {
     static constexpr uint32_t InFlightCount = 2;
     static constexpr const char* const RequiredDeviceExtensions[] = {
         VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME,
-        VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME};
+        VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME,
+        VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME};
 
     struct DeviceFeatures;
 
@@ -52,6 +56,7 @@ struct GfxContext_VX {
     vk::Semaphore m_TempSemaphore;
     vk::SwapchainKHR m_Swapchain;
     vx::List<FrameResource> m_FrameResources;
+    ImageAttachment m_MultiSampleImage;
     ImageAttachment m_DepthStencilImage;
 
     vk::Format m_SwapchainImageFormat = vk::Format::eB8G8R8A8Unorm;

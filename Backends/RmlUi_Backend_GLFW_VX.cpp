@@ -10,6 +10,12 @@
 #include <GLFW/glfw3.h>
 #include <optional>
 
+// Determines the anti-aliasing quality when creating layers. Enables
+// better-looking visuals, especially when transforms are applied.
+#ifndef RMLUI_NUM_MSAA_SAMPLES
+#define RMLUI_NUM_MSAA_SAMPLES 2
+#endif
+
 struct BackendContext {
     GLFWwindow* m_Window = nullptr;
     std::optional<SystemInterface_GLFW> m_System;
@@ -54,14 +60,15 @@ struct BackendContext {
         if (!m_Gfx.InitContext())
             return false;
 
+        UpdateFramebufferSize();
+        m_Gfx.m_SampleCount = vk::SampleCountFlagBits(RMLUI_NUM_MSAA_SAMPLES);
+        m_Gfx.InitRenderTarget(m_FrameExtent);
+
         if (!m_Renderer.Init(m_Gfx)) {
             Rml::Log::Message(Rml::Log::LT_ERROR,
                               "Failed to initialize Vulkan render interface");
             return false;
         }
-
-        UpdateFramebufferSize();
-        m_Gfx.InitRenderTarget(m_FrameExtent);
 
         m_System->SetWindow(m_Window);
 
@@ -85,8 +92,8 @@ struct BackendContext {
         if (m_Gfx.m_Device) {
             (void)m_Gfx.m_Device.waitIdle();
         }
-        m_Renderer.ResetAllResourceUse((2u << GfxContext_VX::InFlightCount) -
-                                       2u);
+        m_Renderer.ReleaseAllResourceUse((2u << GfxContext_VX::InFlightCount) -
+                                         2u);
         m_Renderer.Destroy();
         m_Gfx.Destroy();
         if (m_Window) {
@@ -245,7 +252,7 @@ struct BackendContext {
 
     void BeginFrame() {
         m_Gfx.AcquireNextFrame();
-        m_Renderer.ResetAllResourceUse(2u << m_Gfx.m_FrameNumber);
+        m_Renderer.ReleaseAllResourceUse(2u << m_Gfx.m_FrameNumber);
         if (m_Gfx.InitFrame()) {
             m_Gfx.RecreateRenderTarget(m_FrameExtent);
             m_Renderer.ResetRenderTarget();

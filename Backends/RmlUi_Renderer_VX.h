@@ -13,7 +13,7 @@ struct Renderer_VX : Rml::RenderInterface {
     void BeginFrame(vx::CommandBuffer commandBuffer);
     void EndFrame();
     void ResetRenderTarget();
-    void ResetAllResourceUse(uint8_t useFlags);
+    void ReleaseAllResourceUse(uint8_t useFlags);
 
     /// Called by RmlUi when it wants to compile geometry it believes will be
     /// static for the forseeable future.
@@ -78,6 +78,11 @@ struct Renderer_VX : Rml::RenderInterface {
         Rml::Span<const Rml::CompiledFilterHandle> filters) override;
     void PopLayer() override;
 
+    Rml::CompiledFilterHandle
+    CompileFilter(const Rml::String& name,
+                  const Rml::Dictionary& parameters) override;
+    void ReleaseFilter(Rml::CompiledFilterHandle filter) override;
+
 private:
     struct TextureDescriptorSet;
     struct GradientDescriptorSet;
@@ -102,9 +107,13 @@ private:
             return index;
         }
 
-        const T* Use(uintptr_t index, uint8_t useFlag) const noexcept {
+        const T& Get(uintptr_t index) const noexcept {
+            return m_Elems[index].m_Resource;
+        }
+
+        const T& Use(uintptr_t index, uint8_t useFlag) const noexcept {
             m_Uses[index] |= useFlag;
-            return &m_Elems[index].m_Resource;
+            return m_Elems[index].m_Resource;
         }
 
         void Release(Renderer_VX& self, uintptr_t index) noexcept {
@@ -143,7 +152,7 @@ private:
 
         void Free(Renderer_VX& self, uintptr_t index) {
             auto& elem = m_Elems[index];
-            self.Destroy(elem.m_Resource);
+            self.DestroyResource(elem.m_Resource);
             elem.m_NextFree = m_FreeHead;
             m_FreeHead = index;
         }
@@ -211,11 +220,11 @@ private:
     Rml::TextureHandle CreateTexture(vk::Buffer buffer,
                                      Rml::Vector2i dimensions);
 
-    void Destroy(GeometryResource& g);
-    void Destroy(TextureResource& t);
-    void Destroy(ShaderResource& s);
+    void DestroyResource(GeometryResource& g);
+    void DestroyResource(TextureResource& t);
+    void DestroyResource(ShaderResource& s);
 
-    void BeginLayer(const ImageAttachment& surface);
+    void BeginLayer(const ImagePair& layerImage);
 
     const ImageAttachment& GetTopLayer() const {
         return m_SurfaceManager.GetLayer(m_SurfaceManager.GetTopLayerHandle());
@@ -232,13 +241,16 @@ private:
     vk::PipelineLayout m_BasicPipelineLayout;
     vk::PipelineLayout m_TexturePipelineLayout;
     vk::PipelineLayout m_GradientPipelineLayout;
+    vk::PipelineLayout m_PassthroughPipelineLayout;
     vk::Pipeline m_ClipPipeline;
     vk::Pipeline m_ColorPipeline;
     vk::Pipeline m_TexturePipeline;
     vk::Pipeline m_GradientPipeline;
+    vk::Pipeline m_PassthroughPipeline;
     vk::Sampler m_Sampler;
     vx::CommandBuffer m_CommandBuffer;
     vk::Rect2D m_Scissor;
+    Rml::CompiledGeometryHandle m_FullscreenQuadGeometry = 0;
     uint32_t m_StencilRef = 0;
     bool m_EnableScissor = false;
 };

@@ -31,6 +31,7 @@ struct GfxContext_VX::DeviceFeatures
           vk::PhysicalDeviceTimelineSemaphoreFeatures,
           vk::PhysicalDeviceSynchronization2Features,
           vk::PhysicalDeviceDynamicRenderingFeatures,
+          vk::PhysicalDeviceExtendedDynamicState3FeaturesEXT,
           vk::PhysicalDeviceBufferDeviceAddressFeatures,
           vk::PhysicalDeviceUniformBufferStandardLayoutFeatures> {
     bool Init(vk::PhysicalDevice physicalDevice) {
@@ -45,6 +46,9 @@ struct GfxContext_VX::DeviceFeatures
         if (!supported.dynamicRendering)
             return false;
         dynamicRendering = true;
+        if (!supported.extendedDynamicState3ColorBlendEnable)
+            return false;
+        extendedDynamicState3ColorBlendEnable = true;
         if (!supported.bufferDeviceAddress)
             return false;
         bufferDeviceAddress = true;
@@ -64,11 +68,12 @@ void GfxContext_VX::DestroyFrameResources() {
             m_Device.destroySemaphore(frameResource.m_RenderSemaphore);
         }
     }
+    DestroyImageAttachment(m_MultiSampleImage);
+    DestroyImageAttachment(m_DepthStencilImage);
 }
 
 void GfxContext_VX::Destroy() {
     DestroyFrameResources();
-    DestroyImageAttachment(m_DepthStencilImage);
     if (m_Swapchain) {
         m_Device.destroySwapchainKHR(m_Swapchain);
     }
@@ -136,24 +141,6 @@ vx::CommandBuffer GfxContext_VX::BeginFrame() {
     beginInfo.setFlags(vk::CommandBufferUsageFlagBits::bOneTimeSubmit);
     check(commandBuffer.begin(beginInfo));
 
-    vx::ImageMemoryBarrierState depthStencilImageBarrier;
-
-    depthStencilImageBarrier.init(
-        m_DepthStencilImage.m_Image,
-        vx::subresourceRange(vk::ImageAspectFlagBits::bDepth |
-                             vk::ImageAspectFlagBits::bStencil));
-    depthStencilImageBarrier.setSrcStageAccess(
-        vk::PipelineStageFlagBits2::bLateFragmentTests,
-        vk::AccessFlagBits2::bDepthStencilAttachmentWrite);
-    depthStencilImageBarrier.setNewLayout(vk::ImageLayout::eAttachmentOptimal);
-    depthStencilImageBarrier.setDstStageAccess(
-        vk::PipelineStageFlagBits2::bEarlyFragmentTests |
-            vk::PipelineStageFlagBits2::bLateFragmentTests,
-        vk::AccessFlagBits2::bDepthStencilAttachmentRead |
-            vk::AccessFlagBits2::bDepthStencilAttachmentWrite);
-
-    commandBuffer.cmdPipelineBarriers(depthStencilImageBarrier);
-
     vk::Viewport viewport;
     viewport.setWidth(float(m_FrameExtent.width));
     viewport.setHeight(float(m_FrameExtent.height));
@@ -161,34 +148,6 @@ vx::CommandBuffer GfxContext_VX::BeginFrame() {
     viewport.setMaxDepth(1.f);
     commandBuffer.cmdSetViewport(0, 1, &viewport);
 
-#if 0
-    vk::RenderingAttachmentInfo colorAttachmentInfo;
-    colorAttachmentInfo.setImageLayout(colorImageBarrier.getNewLayout());
-    colorAttachmentInfo.setLoadOp(vk::AttachmentLoadOp::eClear);
-    colorAttachmentInfo.setStoreOp(vk::AttachmentStoreOp::eStore);
-    colorAttachmentInfo.setImageView(
-        m_FrameResources[m_ImageIndex].m_ImageView);
-    colorAttachmentInfo.setClearValue({.color = vk::ClearColorValue()});
-
-    vk::RenderingAttachmentInfo depthStencilAttachmentInfo;
-    depthStencilAttachmentInfo.setImageLayout(
-        depthStencilImageBarrier.getNewLayout());
-    depthStencilAttachmentInfo.setLoadOp(vk::AttachmentLoadOp::eClear);
-    depthStencilAttachmentInfo.setStoreOp(vk::AttachmentStoreOp::eDontCare);
-    depthStencilAttachmentInfo.setImageView(m_DepthStencilImage.m_ImageView);
-    depthStencilAttachmentInfo.setClearValue(
-        {.depthStencil = vk::ClearDepthStencilValue{1.0f, 0}});
-
-    vk::RenderingInfo renderingInfo;
-    renderingInfo.setRenderArea({{0, 0}, m_FrameExtent});
-    renderingInfo.setLayerCount(1);
-    renderingInfo.setColorAttachmentCount(1);
-    renderingInfo.setColorAttachments(&colorAttachmentInfo);
-    renderingInfo.setDepthAttachment(&depthStencilAttachmentInfo);
-    renderingInfo.setStencilAttachment(&depthStencilAttachmentInfo);
-
-    commandBuffer.cmdBeginRendering(renderingInfo);
-#endif
     return commandBuffer;
 }
 
@@ -258,7 +217,6 @@ void GfxContext_VX::RecreateRenderTarget(vk::Extent2D extent) {
     m_FrameNumber = 0;
     (void)m_Device.waitIdle();
     DestroyFrameResources();
-    DestroyImageAttachment(m_DepthStencilImage);
     m_FrameResources.count = 0;
     const auto oldSwapchain = m_Swapchain;
     InitRenderTarget(extent);
@@ -330,6 +288,13 @@ void GfxContext_VX::InitRenderTarget(vk::Extent2D extent) {
                                                      &surfaceCapabilities));
     UpdateExtent(surfaceCapabilities, extent);
     BuildSwapchain(surfaceCapabilities);
+    if (m_SampleCount != vk::SampleCountFlagBits::b1) {
+        m_MultiSampleImage = CreateImageAttachment(
+            m_SwapchainImageFormat,
+            vk::ImageUsageFlagBits::bColorAttachment |
+                vk::ImageUsageFlagBits::bTransientAttachment,
+            vk::ImageAspectFlagBits::bColor, m_SampleCount);
+    }
     m_DepthStencilImage = CreateImageAttachment(
         m_DepthStencilImageFormat,
         vk::ImageUsageFlagBits::bDepthStencilAttachment,
