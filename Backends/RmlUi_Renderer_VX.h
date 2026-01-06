@@ -223,9 +223,11 @@ private:
     void DestroyResource(TextureResource& t);
     void DestroyResource(ShaderResource& s);
 
-    void BeginLayer(const ImagePair& layerImage);
+    void BeginLayer(const ImagePair& colorImage);
 
     void BeginPostprocess(const ImagePair& colorImage);
+
+    void ResolveLayer(Rml::LayerHandle source, vk::Image dstImage);
 
     const ImageAttachment& GetTopLayer() const {
         return m_SurfaceManager.GetLayer(m_SurfaceManager.GetTopLayerHandle());
@@ -234,12 +236,14 @@ private:
     template<class F>
     static void VisitFilter(FilterBase* p, F f);
 
-    vk::ImageView
-    RenderFilters(const ImagePair& source,
-                  Rml::Span<const Rml::CompiledFilterHandle> filterHandles);
+    void
+    RenderFilters(Rml::Span<const Rml::CompiledFilterHandle> filterHandles);
 
-    void RenderFilter(const PassthroughFilter& filter, vk::ImageView& source,
-                      unsigned& postprocess);
+    void RenderFilter(const PassthroughFilter& filter);
+
+    void RenderFilter(const FilterBase&) {}
+
+    void SwitchPipeline(vk::Pipeline pipeline);
 
     GfxContext_VX* m_Gfx = nullptr;
     ResourcePool<GeometryResource> m_GeometryResources;
@@ -264,4 +268,5 @@ private:
     Rml::CompiledGeometryHandle m_FullscreenQuadGeometry = 0;
     uint32_t m_StencilRef = 0;
     bool m_EnableScissor = false;
+    bool m_EnableClipMask = false;
 };

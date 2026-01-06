@@ -49,6 +49,9 @@ struct GfxContext_VX::DeviceFeatures
         if (!supported.extendedDynamicState3ColorBlendEnable)
             return false;
         extendedDynamicState3ColorBlendEnable = true;
+        if (!supported.extendedDynamicState3ColorBlendEquation)
+            return false;
+        extendedDynamicState3ColorBlendEquation = true;
         if (!supported.bufferDeviceAddress)
             return false;
         bufferDeviceAddress = true;
@@ -68,7 +71,6 @@ void GfxContext_VX::DestroyFrameResources() {
             m_Device.destroySemaphore(frameResource.m_RenderSemaphore);
         }
     }
-    DestroyImageAttachment(m_MultiSampleImage);
     DestroyImageAttachment(m_DepthStencilImage);
 }
 
@@ -288,13 +290,6 @@ void GfxContext_VX::InitRenderTarget(vk::Extent2D extent) {
                                                      &surfaceCapabilities));
     UpdateExtent(surfaceCapabilities, extent);
     BuildSwapchain(surfaceCapabilities);
-    if (m_SampleCount != vk::SampleCountFlagBits::b1) {
-        m_MultiSampleImage = CreateImageAttachment(
-            m_SwapchainImageFormat,
-            vk::ImageUsageFlagBits::bColorAttachment |
-                vk::ImageUsageFlagBits::bTransientAttachment,
-            vk::ImageAspectFlagBits::bColor, m_SampleCount);
-    }
     m_DepthStencilImage = CreateImageAttachment(
         m_DepthStencilImageFormat,
         vk::ImageUsageFlagBits::bDepthStencilAttachment,

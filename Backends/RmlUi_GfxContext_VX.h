@@ -56,7 +56,6 @@ struct GfxContext_VX {
     vk::Semaphore m_TempSemaphore;
     vk::SwapchainKHR m_Swapchain;
     vx::List<FrameResource> m_FrameResources;
-    ImageAttachment m_MultiSampleImage;
     ImageAttachment m_DepthStencilImage;
 
     vk::Format m_SwapchainImageFormat = vk::Format::eB8G8R8A8Unorm;
