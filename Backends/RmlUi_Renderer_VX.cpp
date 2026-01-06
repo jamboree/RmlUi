@@ -41,6 +41,36 @@ struct StagingBuffer {
     }
 };
 
+static inline vk::ColorBlendEquationEXT
+makeColorBlendEquation(vk::BlendOp op, vk::BlendFactor srcFactor,
+                       vk::BlendFactor dstFactor) {
+    vk::ColorBlendEquationEXT colorBlendEquation;
+    colorBlendEquation.setColorBlendOp(op);
+    colorBlendEquation.setAlphaBlendOp(op);
+    colorBlendEquation.setSrcColorBlendFactor(srcFactor);
+    colorBlendEquation.setSrcAlphaBlendFactor(srcFactor);
+    colorBlendEquation.setDstColorBlendFactor(dstFactor);
+    colorBlendEquation.setDstAlphaBlendFactor(dstFactor);
+    return colorBlendEquation;
+}
+
+static inline void AttachmentToTexture(vx::CommandBuffer commandBuffer,
+                                       vk::Image image) {
+    vx::ImageMemoryBarrierState imageBarrier;
+    imageBarrier.init(image,
+                      vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
+    imageBarrier.setOldLayout(vk::ImageLayout::eAttachmentOptimal);
+    imageBarrier.setNewLayout(vk::ImageLayout::eShaderReadOnlyOptimal);
+    imageBarrier.setSrcStageAccess(
+        vk::PipelineStageFlagBits2::bColorAttachmentOutput |
+            vk::PipelineStageFlagBits2::bResolve,
+        vk::AccessFlagBits2::bColorAttachmentWrite |
+            vk::AccessFlagBits2::bTransferWrite);
+    imageBarrier.setDstStageAccess(vk::PipelineStageFlagBits2::bFragmentShader,
+                                   vk::AccessFlagBits2::bShaderRead);
+    commandBuffer.cmdPipelineBarriers(imageBarrier);
+}
+
 struct Renderer_VX::GeometryResource {
     uint32_t m_VertexCount;
     uint32_t m_IndexCount;
@@ -86,6 +116,51 @@ struct Renderer_VX::GradientDescriptorSet {
 
     VX_BINDING(0, vx::UniformBufferDescriptor, Stages) uniform;
 };
+
+Renderer_VX::SurfaceManager::~SurfaceManager() { std::free(m_layers); }
+
+void Renderer_VX::SurfaceManager::Destroy(GfxContext_VX& gfx) {
+    for (auto& image : std::span(m_layers, m_layers_capacity)) {
+        gfx.DestroyImageAttachment(image);
+    }
+    m_layers_capacity = 0;
+    for (auto& image : m_postprocess) {
+        gfx.DestroyImageAttachment(image);
+    }
+}
+
+Rml::LayerHandle Renderer_VX::SurfaceManager::PushLayer(GfxContext_VX& gfx) {
+    RMLUI_ASSERT(m_layers_size <= m_layers_capacity);
+
+    if (m_layers_size == m_layers_capacity) {
+        ++m_layers_capacity;
+        m_layers = static_cast<ImageAttachment*>(std::realloc(
+            m_layers, sizeof(ImageAttachment) * m_layers_capacity));
+        m_layers[m_layers_size] = gfx.CreateImageAttachment(
+            gfx.m_SwapchainImageFormat,
+            vk::ImageUsageFlagBits::bColorAttachment |
+                vk::ImageUsageFlagBits::bTransferSrc,
+            vk::ImageAspectFlagBits::bColor, vk::SampleCountFlagBits::b1);
+    }
+
+    ++m_layers_size;
+    return GetTopLayerHandle();
+}
+
+const ImageAttachment&
+Renderer_VX::SurfaceManager::GetPostprocess(GfxContext_VX& gfx,
+                                            unsigned index) {
+    RMLUI_ASSERT(index < std::size(m_postprocess));
+    auto& fb = m_postprocess[index];
+    if (!fb.m_Image) {
+        fb = gfx.CreateImageAttachment(
+            gfx.m_SwapchainImageFormat,
+            vk::ImageUsageFlagBits::bColorAttachment |
+                vk::ImageUsageFlagBits::bSampled,
+            vk::ImageAspectFlagBits::bColor, vk::SampleCountFlagBits::b1);
+    }
+    return fb;
+}
 
 Renderer_VX::Renderer_VX() = default;
 Renderer_VX::~Renderer_VX() = default;
@@ -735,6 +810,40 @@ void Renderer_VX::BeginLayer(const ImagePair& layerImage) {
     m_CommandBuffer.cmdBeginRendering(renderingInfo);
 }
 
+void Renderer_VX::BeginPostprocess(const ImagePair& colorImage) {
+    vx::ImageMemoryBarrierState colorImageBarrier;
+
+    colorImageBarrier.init(
+        colorImage.m_Image,
+        vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
+    colorImageBarrier.setNewLayout(vk::ImageLayout::eAttachmentOptimal);
+    colorImageBarrier.setSrcStageAccess(
+        vk::PipelineStageFlagBits2::bFragmentShader,
+        vk::AccessFlagBits2::bShaderRead);
+    colorImageBarrier.setDstStageAccess(
+        vk::PipelineStageFlagBits2::bColorAttachmentOutput,
+        vk::AccessFlagBits2::bColorAttachmentWrite);
+
+    m_CommandBuffer.cmdPipelineBarriers(colorImageBarrier);
+
+    vk::RenderingAttachmentInfo colorAttachmentInfo;
+    colorAttachmentInfo.setImageView(colorImage.m_ImageView);
+    colorAttachmentInfo.setImageLayout(colorImageBarrier.getNewLayout());
+    colorAttachmentInfo.setLoadOp(vk::AttachmentLoadOp::eClear);
+    colorAttachmentInfo.setStoreOp(vk::AttachmentStoreOp::eStore);
+    colorAttachmentInfo.setClearValue({.color = vk::ClearColorValue()});
+
+    const vk::Rect2D renderArea{{0, 0}, m_Gfx->m_FrameExtent};
+
+    vk::RenderingInfo renderingInfo;
+    renderingInfo.setRenderArea(renderArea);
+    renderingInfo.setLayerCount(1);
+    renderingInfo.setColorAttachmentCount(1);
+    renderingInfo.setColorAttachments(&colorAttachmentInfo);
+
+    m_CommandBuffer.cmdBeginRendering(renderingInfo);
+}
+
 void Renderer_VX::ReleaseShader(Rml::CompiledShaderHandle shader) {
     RMLUI_ASSERT(shader);
     m_ShaderResources.Release(*this, ~shader);
@@ -754,16 +863,20 @@ void Renderer_VX::CompositeLayers(
     Rml::Span<const Rml::CompiledFilterHandle> filters) {
     using Rml::BlendMode;
 
-    const auto& g = m_GeometryResources.Get(~m_FullscreenQuadGeometry);
+    const auto& fullscreenQuad =
+        m_GeometryResources.Get(~m_FullscreenQuadGeometry);
     const auto topLayer = m_SurfaceManager.GetTopLayerHandle();
 
-#if 0
-    // Render the filters, the PostprocessPrimary framebuffer is used for both input and output.
-    RenderFilters(filters);
-#endif // 0
-
-    if (topLayer != destination) {
+    const auto& srcLayer = m_SurfaceManager.GetLayer(source);
+    auto srcImageView = srcLayer.m_ImageView;
+    if (filters.empty()) {
+        if (topLayer != destination) {
+            m_CommandBuffer.cmdEndRendering();
+            BeginLayer(m_SurfaceManager.GetLayer(destination));
+        }
+    } else {
         m_CommandBuffer.cmdEndRendering();
+        srcImageView = RenderFilters(srcLayer, filters);
         BeginLayer(m_SurfaceManager.GetLayer(destination));
     }
 
@@ -774,13 +887,19 @@ void Renderer_VX::CompositeLayers(
     m_CommandBuffer.cmdPushDescriptorSetKHR(
         vk::PipelineBindPoint::eGraphics, m_PassthroughPipelineLayout, 0,
         {descriptorSet->tex = vx::CombinedImageSamplerDescriptor(
-             m_Sampler, m_SurfaceManager.GetLayer(source).m_ImageView,
+             m_Sampler, srcImageView,
              vk::ImageLayout::eShaderReadOnlyOptimal)});
 
     const vk::Bool32 colorBlendEnable = blend_mode == BlendMode::Blend;
     m_CommandBuffer.cmdSetColorBlendEnableEXT(0, 1, &colorBlendEnable);
+    if (colorBlendEnable) {
+        const auto colorBlendEquation =
+            makeColorBlendEquation(vk::BlendOp::eAdd, vk::BlendFactor::eOne,
+                                   vk::BlendFactor::eOneMinusSrcAlpha);
+        m_CommandBuffer.cmdSetColorBlendEquationEXT(0, 1, &colorBlendEquation);
+    }
 
-    g.Draw(m_CommandBuffer);
+    fullscreenQuad.Draw(m_CommandBuffer);
 
     if (topLayer != destination) {
         m_CommandBuffer.cmdEndRendering();
@@ -790,38 +909,43 @@ void Renderer_VX::CompositeLayers(
 
 void Renderer_VX::PopLayer() {
     m_CommandBuffer.cmdEndRendering();
+    AttachmentToTexture(m_CommandBuffer, GetTopLayer().m_Image);
     m_SurfaceManager.PopLayer();
-    BeginLayer(GetTopLayer());
+    BeginLayer(GetTopLayer()); // FIXME: resume
 }
 
 enum class FilterType { Passthrough, Blur, DropShadow, ColorMatrix, MaskImage };
 
-struct FilterBase {
+struct Renderer_VX::FilterBase {
     FilterType type;
 
     constexpr FilterBase(FilterType type) : type(type) {}
 };
 
-struct PassthroughFilter : FilterBase {
+struct Renderer_VX::PassthroughFilter : FilterBase {
     constexpr PassthroughFilter() : FilterBase(FilterType::Passthrough) {}
     float blend_factor;
 };
 
-struct BlurFilter : FilterBase {
+struct Renderer_VX::BlurFilter : FilterBase {
     constexpr BlurFilter() : FilterBase(FilterType::Blur) {}
     float sigma;
 };
 
-struct DropShadowFilter : FilterBase {
+struct Renderer_VX::DropShadowFilter : FilterBase {
     DropShadowFilter() noexcept : FilterBase(FilterType::DropShadow) {}
     float sigma;
     Rml::Vector2f offset;
     Rml::ColourbPremultiplied color;
 };
 
-struct ColorMatrixFilter : FilterBase {
+struct Renderer_VX::ColorMatrixFilter : FilterBase {
     ColorMatrixFilter() noexcept : FilterBase(FilterType::ColorMatrix) {}
     Rml::Matrix4f color_matrix;
+};
+
+struct Renderer_VX::MaskImageFilter : FilterBase {
+    constexpr MaskImageFilter() : FilterBase(FilterType::MaskImage) {}
 };
 
 template<class T>
@@ -939,21 +1063,20 @@ Renderer_VX::CompileFilter(const Rml::String& name,
     return {};
 }
 
-void Renderer_VX::ReleaseFilter(Rml::CompiledFilterHandle filter) {
-    const auto f = reinterpret_cast<const FilterBase*>(filter);
-    switch (f->type) {
-    case FilterType::Passthrough:
-        delete static_cast<const PassthroughFilter*>(f);
-        break;
-    case FilterType::Blur: delete static_cast<const BlurFilter*>(f); break;
-    case FilterType::DropShadow:
-        delete static_cast<const DropShadowFilter*>(f);
-        break;
-    case FilterType::ColorMatrix:
-        delete static_cast<const ColorMatrixFilter*>(f);
-        break;
-    case FilterType::MaskImage: delete f; break;
+template<class F>
+void Renderer_VX::VisitFilter(FilterBase* p, F f) {
+    switch (p->type) {
+    case FilterType::Passthrough: return f(static_cast<PassthroughFilter*>(p));
+    case FilterType::Blur: return f(static_cast<BlurFilter*>(p));
+    case FilterType::DropShadow: return f(static_cast<DropShadowFilter*>(p));
+    case FilterType::ColorMatrix: return f(static_cast<ColorMatrixFilter*>(p));
+    case FilterType::MaskImage: return f(static_cast<MaskImageFilter*>(p));
     }
+}
+
+void Renderer_VX::ReleaseFilter(Rml::CompiledFilterHandle filter) {
+    VisitFilter(reinterpret_cast<FilterBase*>(filter),
+                [](auto* p) { delete p; });
 }
 
 void Renderer_VX::InitPipelineLayouts() {
@@ -1027,7 +1150,7 @@ void Renderer_VX::InitPipelines(
     vk::PipelineShaderStageCreateInfo shaderStageInfos[2];
     pipelineBuilder.setStages(shaderStageInfos);
 
-    vk::DynamicState dynamicStates[5];
+    vk::DynamicState dynamicStates[7];
     pipelineBuilder.setDynamicStates(dynamicStates);
 
     vk::VertexInputAttributeDescription vertexAttributeDescriptions[3];
@@ -1113,7 +1236,9 @@ void Renderer_VX::InitPipelines(
     shaderStageInfos[1].setModule(gradientFragShader);
     m_GradientPipeline = pipelineBuilder.build(device).get();
 
-    dynamicStates[4] = vk::DynamicState::eColorBlendEnableEXT;
+    dynamicStates[4] = vk::DynamicState::eBlendConstants;
+    dynamicStates[5] = vk::DynamicState::eColorBlendEnableEXT;
+    dynamicStates[6] = vk::DynamicState::eColorBlendEquationEXT;
     pipelineBuilder.setDynamicStateCount(5);
 
     vertexAttributeDescriptions[1].setLocation(1);
@@ -1191,47 +1316,42 @@ Rml::TextureHandle Renderer_VX::CreateTexture(vk::Buffer buffer,
     return ~m_TextureResources.Create(t);
 }
 
-Renderer_VX::SurfaceManager::~SurfaceManager() { std::free(m_layers); }
-
-void Renderer_VX::SurfaceManager::Destroy(GfxContext_VX& gfx) {
-    for (auto& image : std::span(m_layers, m_layers_capacity)) {
-        gfx.DestroyImageAttachment(image);
-    }
-    m_layers_capacity = 0;
-    for (auto& image : m_postprocess) {
-        gfx.DestroyImageAttachment(image);
+vk::ImageView Renderer_VX::RenderFilters(
+    const ImagePair& source,
+    Rml::Span<const Rml::CompiledFilterHandle> filterHandles) {
+    unsigned postprocess = 0;
+    for (const auto filterHandle : filterHandles) {
+        VisitFilter(reinterpret_cast<FilterBase*>(filterHandle),
+                    [&](auto* p) { RenderFilter(*p, source, postprocess); });
     }
 }
 
-Rml::LayerHandle Renderer_VX::SurfaceManager::PushLayer(GfxContext_VX& gfx) {
-    RMLUI_ASSERT(m_layers_size <= m_layers_capacity);
+void Renderer_VX::RenderFilter(const PassthroughFilter& filter,
+                               vk::ImageView& source, unsigned& postprocess) {
+    const auto& fullscreenQuad =
+        m_GeometryResources.Get(~m_FullscreenQuadGeometry);
 
-    if (m_layers_size == m_layers_capacity) {
-        ++m_layers_capacity;
-        m_layers = static_cast<ImageAttachment*>(std::realloc(
-            m_layers, sizeof(ImageAttachment) * m_layers_capacity));
-        m_layers[m_layers_size] = gfx.CreateImageAttachment(
-            gfx.m_SwapchainImageFormat,
-            vk::ImageUsageFlagBits::bColorAttachment |
-                vk::ImageUsageFlagBits::bTransferSrc,
-            vk::ImageAspectFlagBits::bColor, vk::SampleCountFlagBits::b1);
-    }
+    BeginPostprocess(m_SurfaceManager.GetPostprocess(*m_Gfx, postprocess));
 
-    ++m_layers_size;
-    return GetTopLayerHandle();
-}
+    m_CommandBuffer.cmdBindPipeline(vk::PipelineBindPoint::eGraphics,
+                                    m_PassthroughPipeline);
 
-const ImageAttachment&
-Renderer_VX::SurfaceManager::GetPostprocess(GfxContext_VX& gfx,
-                                            Postprocess id) {
-    RMLUI_ASSERT(std::to_underlying(id) < std::size(m_postprocess));
-    auto& fb = m_postprocess[std::to_underlying(id)];
-    if (!fb.m_Image) {
-        fb = gfx.CreateImageAttachment(
-            gfx.m_SwapchainImageFormat,
-            vk::ImageUsageFlagBits::bColorAttachment |
-                vk::ImageUsageFlagBits::bSampled,
-            vk::ImageAspectFlagBits::bColor, vk::SampleCountFlagBits::b1);
-    }
-    return fb;
+    const vx::DescriptorSet<TextureDescriptorSet> descriptorSet;
+    m_CommandBuffer.cmdPushDescriptorSetKHR(
+        vk::PipelineBindPoint::eGraphics, m_PassthroughPipelineLayout, 0,
+        {descriptorSet->tex = vx::CombinedImageSamplerDescriptor(
+             m_Sampler, source, vk::ImageLayout::eShaderReadOnlyOptimal)});
+
+    const vk::Bool32 colorBlendEnable = true;
+    m_CommandBuffer.cmdSetColorBlendEnableEXT(0, 1, &colorBlendEnable);
+    const auto colorBlendEquation = makeColorBlendEquation(
+        vk::BlendOp::eAdd, vk::BlendFactor::eConstantColor,
+        vk::BlendFactor::eZero);
+    m_CommandBuffer.cmdSetColorBlendEquationEXT(0, 1, &colorBlendEquation);
+    const float blendConstants[4] = {filter.blend_factor, filter.blend_factor,
+                                     filter.blend_factor, filter.blend_factor};
+    m_CommandBuffer.cmdSetBlendConstants(blendConstants);
+
+    m_CommandBuffer.cmdEndRendering();
+    // AttachmentToTexture(m_CommandBuffer, srcLayer.m_Image);
 }

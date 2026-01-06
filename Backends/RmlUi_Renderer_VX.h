@@ -89,6 +89,12 @@ private:
     struct GeometryResource;
     struct TextureResource;
     struct ShaderResource;
+    struct FilterBase;
+    struct PassthroughFilter;
+    struct BlurFilter;
+    struct DropShadowFilter;
+    struct ColorMatrixFilter;
+    struct MaskImageFilter;
 
     template<class T>
     struct ResourcePool {
@@ -164,13 +170,6 @@ private:
         Elem* m_Elems = nullptr;
     };
 
-    enum class Postprocess {
-        Primary,
-        Secondary,
-        Tertiary,
-        BlendMask,
-    };
-
     struct SurfaceManager {
         ~SurfaceManager();
 
@@ -198,7 +197,7 @@ private:
         }
 
         const ImageAttachment& GetPostprocess(GfxContext_VX& gfx,
-                                              Postprocess id);
+                                              unsigned index);
 
         void SwapPostprocessPrimarySecondary() {
             std::swap(m_postprocess[0], m_postprocess[1]);
@@ -226,9 +225,21 @@ private:
 
     void BeginLayer(const ImagePair& layerImage);
 
+    void BeginPostprocess(const ImagePair& colorImage);
+
     const ImageAttachment& GetTopLayer() const {
         return m_SurfaceManager.GetLayer(m_SurfaceManager.GetTopLayerHandle());
     }
+
+    template<class F>
+    static void VisitFilter(FilterBase* p, F f);
+
+    vk::ImageView
+    RenderFilters(const ImagePair& source,
+                  Rml::Span<const Rml::CompiledFilterHandle> filterHandles);
+
+    void RenderFilter(const PassthroughFilter& filter, vk::ImageView& source,
+                      unsigned& postprocess);
 
     GfxContext_VX* m_Gfx = nullptr;
     ResourcePool<GeometryResource> m_GeometryResources;
