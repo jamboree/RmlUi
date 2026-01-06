@@ -223,7 +223,7 @@ private:
     void DestroyResource(TextureResource& t);
     void DestroyResource(ShaderResource& s);
 
-    void BeginLayer(const ImagePair& colorImage);
+    void BeginLayer(const ImagePair& colorImage, bool resume);
 
     void BeginPostprocess(const ImagePair& colorImage);
 
@@ -262,6 +262,7 @@ private:
     vk::Pipeline m_TexturePipeline;
     vk::Pipeline m_GradientPipeline;
     vk::Pipeline m_PassthroughPipeline;
+    vk::Pipeline m_MsPassthroughPipeline;
     vk::Sampler m_Sampler;
     vx::CommandBuffer m_CommandBuffer;
     vk::Rect2D m_Scissor;

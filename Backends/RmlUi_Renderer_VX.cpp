@@ -236,6 +236,9 @@ void Renderer_VX::Destroy() {
     if (m_PassthroughPipeline) {
         device.destroyPipeline(m_PassthroughPipeline);
     }
+    if (m_MsPassthroughPipeline) {
+        device.destroyPipeline(m_MsPassthroughPipeline);
+    }
     if (m_BasicPipelineLayout) {
         device.destroyPipelineLayout(m_BasicPipelineLayout);
     }
@@ -288,7 +291,7 @@ void Renderer_VX::BeginFrame(vx::CommandBuffer commandBuffer) {
                                     VX_FIELD(VsInput, transform) = transform);
 
     const auto topLayer = m_SurfaceManager.PushLayer(*m_Gfx);
-    BeginLayer(m_SurfaceManager.GetLayer(topLayer));
+    BeginLayer(m_SurfaceManager.GetLayer(topLayer), false);
 }
 
 void Renderer_VX::EndFrame() {
@@ -698,17 +701,20 @@ void Renderer_VX::DestroyResource(ShaderResource& s) {
     allocator.destroyBuffer(s.m_Buffer, s.m_Allocation);
 }
 
-void Renderer_VX::BeginLayer(const ImagePair& colorImage) {
+void Renderer_VX::BeginLayer(const ImagePair& colorImage, bool resume) {
     vx::ImageMemoryBarrierState imageMemoryBarriers[2];
     auto& [colorImageBarrier, depthStencilImageBarrier] = imageMemoryBarriers;
 
     colorImageBarrier.init(
         colorImage.m_Image,
         vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
+    if (resume) {
+        colorImageBarrier.setOldLayout(vk::ImageLayout::eAttachmentOptimal);
+        colorImageBarrier.setSrcStageAccess(
+            vk::PipelineStageFlagBits2::bColorAttachmentOutput,
+            vk::AccessFlagBits2::bColorAttachmentWrite);
+    }
     colorImageBarrier.setNewLayout(vk::ImageLayout::eAttachmentOptimal);
-    colorImageBarrier.setSrcStageAccess(
-        vk::PipelineStageFlagBits2::bFragmentShader,
-        vk::AccessFlagBits2::bShaderRead);
     colorImageBarrier.setDstStageAccess(
         vk::PipelineStageFlagBits2::bColorAttachmentOutput,
         vk::AccessFlagBits2::bColorAttachmentWrite);
@@ -732,9 +738,13 @@ void Renderer_VX::BeginLayer(const ImagePair& colorImage) {
     vk::RenderingAttachmentInfo colorAttachmentInfo;
     colorAttachmentInfo.setImageView(colorImage.m_ImageView);
     colorAttachmentInfo.setImageLayout(colorImageBarrier.getNewLayout());
-    colorAttachmentInfo.setLoadOp(vk::AttachmentLoadOp::eClear);
     colorAttachmentInfo.setStoreOp(vk::AttachmentStoreOp::eStore);
-    colorAttachmentInfo.setClearValue({.color = vk::ClearColorValue()});
+    if (resume) {
+        colorAttachmentInfo.setLoadOp(vk::AttachmentLoadOp::eLoad);
+    } else {
+        colorAttachmentInfo.setLoadOp(vk::AttachmentLoadOp::eClear);
+        colorAttachmentInfo.setClearValue({.color = vk::ClearColorValue()});
+    }
 
     vk::RenderingAttachmentInfo depthStencilAttachmentInfo;
     depthStencilAttachmentInfo.setImageLayout(
@@ -851,7 +861,7 @@ Rml::LayerHandle Renderer_VX::PushLayer() {
     m_CommandBuffer.cmdEndRendering();
 
     const auto topLayer = m_SurfaceManager.PushLayer(*m_Gfx);
-    BeginLayer(m_SurfaceManager.GetLayer(topLayer));
+    BeginLayer(m_SurfaceManager.GetLayer(topLayer), false);
     return topLayer;
 }
 
@@ -860,6 +870,7 @@ void Renderer_VX::CompositeLayers(
     Rml::BlendMode blend_mode,
     Rml::Span<const Rml::CompiledFilterHandle> filters) {
     using Rml::BlendMode;
+    RMLUI_ASSERT(source > destination);
 
     m_CommandBuffer.cmdEndRendering();
 
@@ -877,9 +888,11 @@ void Renderer_VX::CompositeLayers(
     // input and output.
     RenderFilters(filters);
 
-    BeginLayer(m_SurfaceManager.GetLayer(destination));
+    BeginLayer(m_SurfaceManager.GetLayer(destination), true);
 
-    SwitchPipeline(m_PassthroughPipeline);
+    SwitchPipeline(m_Gfx->m_SampleCount == vk::SampleCountFlagBits::b1
+                       ? m_PassthroughPipeline
+                       : m_MsPassthroughPipeline);
 
     const vx::DescriptorSet<TextureDescriptorSet> descriptorSet;
     m_CommandBuffer.cmdPushDescriptorSetKHR(
@@ -902,14 +915,14 @@ void Renderer_VX::CompositeLayers(
     const auto topLayer = m_SurfaceManager.GetTopLayerHandle();
     if (topLayer != destination) {
         m_CommandBuffer.cmdEndRendering();
-        BeginLayer(m_SurfaceManager.GetLayer(topLayer));
+        BeginLayer(m_SurfaceManager.GetLayer(topLayer), true);
     }
 }
 
 void Renderer_VX::PopLayer() {
     m_CommandBuffer.cmdEndRendering();
     m_SurfaceManager.PopLayer();
-    BeginLayer(GetTopLayer()); // FIXME: resume
+    BeginLayer(GetTopLayer(), true);
 }
 
 enum class FilterType { Passthrough, Blur, DropShadow, ColorMatrix, MaskImage };
@@ -1249,6 +1262,11 @@ void Renderer_VX::InitPipelines(
     shaderStageInfos[0].setModule(passthroughVertShader);
     shaderStageInfos[1].setModule(passthroughFragShader);
 
+    if (m_Gfx->m_SampleCount != vk::SampleCountFlagBits::b1) {
+        m_MsPassthroughPipeline = pipelineBuilder.build(device).get();
+    }
+
+    pipelineBuilder.setRasterizationSamples(vk::SampleCountFlagBits::b1);
     m_PassthroughPipeline = pipelineBuilder.build(device).get();
 
     device.destroyShaderModule(clipVertShader);
