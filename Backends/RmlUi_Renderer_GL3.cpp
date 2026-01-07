@@ -1811,6 +1811,7 @@ void RenderInterface_GL3::RenderFilters(Rml::Span<const Rml::CompiledFilterHandl
 			glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 		}
 		break;
+#if 0
 		case FilterType::Blur:
 		{
 			glDisable(GL_BLEND);
@@ -1905,6 +1906,7 @@ void RenderInterface_GL3::RenderFilters(Rml::Span<const Rml::CompiledFilterHandl
 			Rml::Log::Message(Rml::Log::LT_WARNING, "Unhandled render filter %d.", (int)type);
 		}
 		break;
+#endif
 		}
 	}
 

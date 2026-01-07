@@ -86,15 +86,19 @@ struct Renderer_VX : Rml::RenderInterface {
 private:
     struct TextureDescriptorSet;
     struct GradientDescriptorSet;
+
     struct GeometryResource;
     struct TextureResource;
     struct ShaderResource;
+
     struct FilterBase;
     struct PassthroughFilter;
     struct BlurFilter;
     struct DropShadowFilter;
     struct ColorMatrixFilter;
     struct MaskImageFilter;
+
+    struct LayerState;
 
     template<class T>
     struct ResourcePool {
@@ -175,6 +179,8 @@ private:
 
         void Destroy(GfxContext_VX& gfx);
 
+        void Invalidate();
+
         // Push a new layer. All references to previously retrieved layers are
         // invalidated.
         Rml::LayerHandle PushLayer(GfxContext_VX& gfx);
@@ -190,6 +196,8 @@ private:
             RMLUI_ASSERT((size_t)layer < (size_t)m_layers_size);
             return m_layers[layer];
         }
+
+        LayerState& GetLayerState(Rml::LayerHandle layer);
 
         Rml::LayerHandle GetTopLayerHandle() const {
             RMLUI_ASSERT(m_layers_size != 0);
@@ -210,6 +218,7 @@ private:
         unsigned m_layers_capacity = 0;
 
         ImageAttachment* m_layers = nullptr;
+        LayerState* m_layerStates = nullptr;
         ImageAttachment m_postprocess[4];
     };
 
@@ -223,7 +232,7 @@ private:
     void DestroyResource(TextureResource& t);
     void DestroyResource(ShaderResource& s);
 
-    void BeginLayer(const ImagePair& colorImage, bool resume);
+    void BeginLayer(Rml::LayerHandle handle, bool resume);
 
     void BeginPostprocess(const ImagePair& colorImage);
 
@@ -266,6 +275,7 @@ private:
     vk::Sampler m_Sampler;
     vx::CommandBuffer m_CommandBuffer;
     vk::Rect2D m_Scissor;
+    // Rml::Matrix4f m_Transform;
     Rml::CompiledGeometryHandle m_FullscreenQuadGeometry = 0;
     uint32_t m_StencilRef = 0;
     bool m_EnableScissor = false;

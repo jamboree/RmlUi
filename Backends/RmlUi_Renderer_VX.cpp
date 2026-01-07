@@ -128,15 +128,42 @@ struct Renderer_VX::GradientDescriptorSet {
     VX_BINDING(0, vx::UniformBufferDescriptor, Stages) uniform;
 };
 
-Renderer_VX::SurfaceManager::~SurfaceManager() { std::free(m_layers); }
+struct Renderer_VX::LayerState {
+    bool m_Transfer = false;
+
+    void SetImageBarrierSrc(vx::ImageMemoryBarrierState& imageBarrier) const {
+        if (m_Transfer) {
+            imageBarrier.setOldLayout(vk::ImageLayout::eTransferSrcOptimal);
+            imageBarrier.setSrcStageAccess(
+                vk::PipelineStageFlagBits2::bTransfer,
+                vk::AccessFlagBits2::bTransferRead);
+        } else {
+            imageBarrier.setOldLayout(vk::ImageLayout::eAttachmentOptimal);
+            imageBarrier.setSrcStageAccess(
+                vk::PipelineStageFlagBits2::bColorAttachmentOutput,
+                vk::AccessFlagBits2::bColorAttachmentWrite);
+        }
+    }
+};
+
+Renderer_VX::SurfaceManager::~SurfaceManager() {
+    std::free(m_layers);
+    std::free(m_layerStates);
+}
 
 void Renderer_VX::SurfaceManager::Destroy(GfxContext_VX& gfx) {
     for (auto& image : std::span(m_layers, m_layers_capacity)) {
         gfx.DestroyImageAttachment(image);
     }
-    m_layers_capacity = 0;
     for (auto& image : m_postprocess) {
         gfx.DestroyImageAttachment(image);
+    }
+}
+
+void Renderer_VX::SurfaceManager::Invalidate() {
+    m_layers_capacity = 0;
+    for (auto& image : m_postprocess) {
+        image.m_Image = {};
     }
 }
 
@@ -152,10 +179,19 @@ Rml::LayerHandle Renderer_VX::SurfaceManager::PushLayer(GfxContext_VX& gfx) {
             vk::ImageUsageFlagBits::bColorAttachment |
                 vk::ImageUsageFlagBits::bTransferSrc,
             vk::ImageAspectFlagBits::bColor, gfx.m_SampleCount);
+        m_layerStates = static_cast<LayerState*>(std::realloc(
+            m_layerStates, sizeof(LayerState) * m_layers_capacity));
     }
+    m_layerStates[m_layers_size] = {};
 
     ++m_layers_size;
     return GetTopLayerHandle();
+}
+
+Renderer_VX::LayerState&
+Renderer_VX::SurfaceManager::GetLayerState(Rml::LayerHandle layer) {
+    RMLUI_ASSERT((size_t)layer < (size_t)m_layers_size);
+    return m_layerStates[layer];
 }
 
 const ImageAttachment&
@@ -279,6 +315,7 @@ void Renderer_VX::BeginFrame(vx::CommandBuffer commandBuffer) {
     m_CommandBuffer = commandBuffer;
     m_StencilRef = 1;
     m_EnableScissor = false;
+    m_EnableClipMask = false;
 
     const auto extent = m_Gfx->m_FrameExtent;
     m_Scissor.setOffset({});
@@ -289,9 +326,15 @@ void Renderer_VX::BeginFrame(vx::CommandBuffer commandBuffer) {
     m_CommandBuffer.cmdPushConstant(m_BasicPipelineLayout,
                                     vk::ShaderStageFlagBits::bVertex,
                                     VX_FIELD(VsInput, transform) = transform);
+    m_CommandBuffer.cmdSetStencilTestEnable(m_EnableClipMask);
+    m_CommandBuffer.cmdSetStencilOp(
+        vk::StencilFaceFlagBits::eFrontAndBack, vk::StencilOp::eKeep,
+        vk::StencilOp::eKeep, vk::StencilOp::eKeep, vk::CompareOp::eAlways);
+    m_CommandBuffer.cmdSetStencilReference(
+        vk::StencilFaceFlagBits::eFrontAndBack, m_StencilRef);
 
     const auto topLayer = m_SurfaceManager.PushLayer(*m_Gfx);
-    BeginLayer(m_SurfaceManager.GetLayer(topLayer), false);
+    BeginLayer(topLayer, false);
 }
 
 void Renderer_VX::EndFrame() {
@@ -301,7 +344,10 @@ void Renderer_VX::EndFrame() {
     m_SurfaceManager.PopLayer();
 }
 
-void Renderer_VX::ResetRenderTarget() { m_SurfaceManager.Destroy(*m_Gfx); }
+void Renderer_VX::ResetRenderTarget() {
+    m_SurfaceManager.Destroy(*m_Gfx);
+    m_SurfaceManager.Invalidate();
+}
 
 void Renderer_VX::ReleaseAllResourceUse(uint8_t useFlags) {
     m_GeometryResources.ReleaseAllUse(*this, useFlags);
@@ -348,7 +394,6 @@ Renderer_VX::CompileGeometry(Rml::Span<const Rml::Vertex> vertices,
 
 void Renderer_VX::SwitchPipeline(vk::Pipeline pipeline) {
     m_CommandBuffer.cmdBindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
-    m_CommandBuffer.cmdSetStencilTestEnable(m_EnableClipMask);
 }
 
 void Renderer_VX::RenderGeometry(Rml::CompiledGeometryHandle geometry,
@@ -529,7 +574,10 @@ void Renderer_VX::SetTransform(const Rml::Matrix4f* transform) {
                                     VX_FIELD(VsInput, transform) = matrix);
 }
 
-void Renderer_VX::EnableClipMask(bool enable) { m_EnableClipMask = enable; }
+void Renderer_VX::EnableClipMask(bool enable) {
+    m_EnableClipMask = enable;
+    m_CommandBuffer.cmdSetStencilTestEnable(m_EnableClipMask);
+}
 
 void Renderer_VX::RenderToClipMask(Rml::ClipMaskOperation operation,
                                    Rml::CompiledGeometryHandle geometry,
@@ -539,26 +587,30 @@ void Renderer_VX::RenderToClipMask(Rml::ClipMaskOperation operation,
 
     bool clearStencil = false;
     auto stencilPassOp = vk::StencilOp::eReplace;
+    uint32_t stencilWriteValue = 1;
+    uint32_t stencilTestValue = 1;
+    uint32_t stencilClearValue = 1;
     switch (operation) {
     case Rml::ClipMaskOperation::Set:
         clearStencil = true;
-        m_StencilRef = 1;
+        stencilClearValue = 0;
         break;
     case Rml::ClipMaskOperation::SetInverse:
         clearStencil = true;
-        m_StencilRef = 0;
+        stencilWriteValue = 0;
         break;
     case Rml::ClipMaskOperation::Intersect:
         stencilPassOp = vk::StencilOp::eIncrementAndClamp;
-        ++m_StencilRef;
+        stencilTestValue = ++m_StencilRef;
         break;
     }
 
-    if (clearStencil) {
+    if (clearStencil && m_Scissor.extent.width && m_Scissor.extent.height) {
         vk::ClearAttachment clearAttachment;
         clearAttachment.setAspectMask(vk::ImageAspectFlagBits::bStencil);
         clearAttachment.setClearValue(
-            {.depthStencil = vk::ClearDepthStencilValue{1.0f, 0}});
+            {.depthStencil =
+                 vk::ClearDepthStencilValue{1.0f, stencilClearValue}});
         vk::ClearRect clearRect;
         clearRect.setLayerCount(1);
         clearRect.setRect(m_Scissor);
@@ -573,11 +625,17 @@ void Renderer_VX::RenderToClipMask(Rml::ClipMaskOperation operation,
     m_CommandBuffer.cmdSetStencilOp(
         vk::StencilFaceFlagBits::eFrontAndBack, vk::StencilOp::eKeep,
         stencilPassOp, vk::StencilOp::eKeep, vk::CompareOp::eAlways);
+    m_CommandBuffer.cmdSetStencilReference(
+        vk::StencilFaceFlagBits::eFrontAndBack, stencilWriteValue);
 
     g.Draw(m_CommandBuffer);
 
+    m_CommandBuffer.cmdSetStencilTestEnable(m_EnableClipMask);
+    m_CommandBuffer.cmdSetStencilOp(
+        vk::StencilFaceFlagBits::eFrontAndBack, vk::StencilOp::eKeep,
+        vk::StencilOp::eKeep, vk::StencilOp::eKeep, vk::CompareOp::eEqual);
     m_CommandBuffer.cmdSetStencilReference(
-        vk::StencilFaceFlagBits::eFrontAndBack, m_StencilRef);
+        vk::StencilFaceFlagBits::eFrontAndBack, stencilTestValue);
 }
 
 inline Rml::Colourf ConvertToColorf(Rml::ColourbPremultiplied c0) {
@@ -690,6 +748,7 @@ void Renderer_VX::RenderShader(Rml::CompiledShaderHandle shader,
         {descriptorSet->uniform =
              vx::UniformBufferDescriptor(s.m_Buffer, 0, VK_WHOLE_SIZE)});
     SwitchPipeline(m_GradientPipeline);
+
     m_CommandBuffer.cmdPushConstant(m_GradientPipelineLayout,
                                     vk::ShaderStageFlagBits::bVertex,
                                     VX_FIELD(VsInput, translate) = translation);
@@ -701,7 +760,8 @@ void Renderer_VX::DestroyResource(ShaderResource& s) {
     allocator.destroyBuffer(s.m_Buffer, s.m_Allocation);
 }
 
-void Renderer_VX::BeginLayer(const ImagePair& colorImage, bool resume) {
+void Renderer_VX::BeginLayer(Rml::LayerHandle handle, bool resume) {
+    const auto& colorImage = m_SurfaceManager.GetLayer(handle);
     vx::ImageMemoryBarrierState imageMemoryBarriers[2];
     auto& [colorImageBarrier, depthStencilImageBarrier] = imageMemoryBarriers;
 
@@ -709,10 +769,9 @@ void Renderer_VX::BeginLayer(const ImagePair& colorImage, bool resume) {
         colorImage.m_Image,
         vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
     if (resume) {
-        colorImageBarrier.setOldLayout(vk::ImageLayout::eAttachmentOptimal);
-        colorImageBarrier.setSrcStageAccess(
-            vk::PipelineStageFlagBits2::bColorAttachmentOutput,
-            vk::AccessFlagBits2::bColorAttachmentWrite);
+        auto& layerState = m_SurfaceManager.GetLayerState(handle);
+        layerState.SetImageBarrierSrc(colorImageBarrier);
+        layerState.m_Transfer = false;
     }
     colorImageBarrier.setNewLayout(vk::ImageLayout::eAttachmentOptimal);
     colorImageBarrier.setDstStageAccess(
@@ -749,12 +808,16 @@ void Renderer_VX::BeginLayer(const ImagePair& colorImage, bool resume) {
     vk::RenderingAttachmentInfo depthStencilAttachmentInfo;
     depthStencilAttachmentInfo.setImageLayout(
         depthStencilImageBarrier.getNewLayout());
-    depthStencilAttachmentInfo.setLoadOp(vk::AttachmentLoadOp::eClear);
-    depthStencilAttachmentInfo.setStoreOp(vk::AttachmentStoreOp::eDontCare);
+    depthStencilAttachmentInfo.setStoreOp(vk::AttachmentStoreOp::eStore);
     depthStencilAttachmentInfo.setImageView(
         m_Gfx->m_DepthStencilImage.m_ImageView);
-    depthStencilAttachmentInfo.setClearValue(
-        {.depthStencil = vk::ClearDepthStencilValue{1.0f, 0}});
+    if (resume || handle != 0) {
+        depthStencilAttachmentInfo.setLoadOp(vk::AttachmentLoadOp::eLoad);
+    } else {
+        depthStencilAttachmentInfo.setLoadOp(vk::AttachmentLoadOp::eClear);
+        depthStencilAttachmentInfo.setClearValue(
+            {.depthStencil = vk::ClearDepthStencilValue{1.0f, 0}});
+    }
 
     const vk::Rect2D renderArea{{0, 0}, m_Gfx->m_FrameExtent};
 
@@ -804,16 +867,16 @@ void Renderer_VX::BeginPostprocess(const ImagePair& colorImage) {
 }
 
 void Renderer_VX::ResolveLayer(Rml::LayerHandle source, vk::Image dstImage) {
+    auto& layerState = m_SurfaceManager.GetLayerState(source);
     vx::ImageMemoryBarrierState imageBarriers[2];
     auto& [srcImageBarrier, dstImageBarrier] = imageBarriers;
 
     srcImageBarrier.init(m_SurfaceManager.GetLayer(source).m_Image,
                          vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
-    srcImageBarrier.setOldLayout(vk::ImageLayout::eAttachmentOptimal);
+    layerState.SetImageBarrierSrc(srcImageBarrier);
+    layerState.m_Transfer = true;
     srcImageBarrier.setNewLayout(vk::ImageLayout::eTransferSrcOptimal);
-    srcImageBarrier.setSrcStageAccess(
-        vk::PipelineStageFlagBits2::bColorAttachmentOutput,
-        vk::AccessFlagBits2::bColorAttachmentWrite);
+
     srcImageBarrier.setDstStageAccess(vk::PipelineStageFlagBits2::bTransfer,
                                       vk::AccessFlagBits2::bTransferRead);
 
@@ -861,7 +924,7 @@ Rml::LayerHandle Renderer_VX::PushLayer() {
     m_CommandBuffer.cmdEndRendering();
 
     const auto topLayer = m_SurfaceManager.PushLayer(*m_Gfx);
-    BeginLayer(m_SurfaceManager.GetLayer(topLayer), false);
+    BeginLayer(topLayer, false);
     return topLayer;
 }
 
@@ -870,7 +933,6 @@ void Renderer_VX::CompositeLayers(
     Rml::BlendMode blend_mode,
     Rml::Span<const Rml::CompiledFilterHandle> filters) {
     using Rml::BlendMode;
-    RMLUI_ASSERT(source > destination);
 
     m_CommandBuffer.cmdEndRendering();
 
@@ -888,11 +950,13 @@ void Renderer_VX::CompositeLayers(
     // input and output.
     RenderFilters(filters);
 
-    BeginLayer(m_SurfaceManager.GetLayer(destination), true);
+    BeginLayer(destination, true);
 
-    SwitchPipeline(m_Gfx->m_SampleCount == vk::SampleCountFlagBits::b1
-                       ? m_PassthroughPipeline
-                       : m_MsPassthroughPipeline);
+    m_CommandBuffer.cmdBindPipeline(vk::PipelineBindPoint::eGraphics,
+                                    m_Gfx->m_SampleCount ==
+                                            vk::SampleCountFlagBits::b1
+                                        ? m_PassthroughPipeline
+                                        : m_MsPassthroughPipeline);
 
     const vx::DescriptorSet<TextureDescriptorSet> descriptorSet;
     m_CommandBuffer.cmdPushDescriptorSetKHR(
@@ -915,14 +979,14 @@ void Renderer_VX::CompositeLayers(
     const auto topLayer = m_SurfaceManager.GetTopLayerHandle();
     if (topLayer != destination) {
         m_CommandBuffer.cmdEndRendering();
-        BeginLayer(m_SurfaceManager.GetLayer(topLayer), true);
+        BeginLayer(topLayer, true);
     }
 }
 
 void Renderer_VX::PopLayer() {
     m_CommandBuffer.cmdEndRendering();
     m_SurfaceManager.PopLayer();
-    BeginLayer(GetTopLayer(), true);
+    BeginLayer(m_SurfaceManager.GetTopLayerHandle(), true);
 }
 
 enum class FilterType { Passthrough, Blur, DropShadow, ColorMatrix, MaskImage };
@@ -987,6 +1051,7 @@ Renderer_VX::CompileFilter(const Rml::String& name,
         ColorMatrixFilter filter;
         const float value = Rml::Get(parameters, "value", 1.0f);
         filter.color_matrix = Rml::Matrix4f::Diag(value, value, value, 1.f);
+        return CreateFilter(std::move(filter));
     } else if (name == "contrast") {
         ColorMatrixFilter filter;
         const float value = Rml::Get(parameters, "value", 1.0f);
@@ -1161,7 +1226,7 @@ void Renderer_VX::InitPipelines(
     vk::PipelineShaderStageCreateInfo shaderStageInfos[2];
     pipelineBuilder.setStages(shaderStageInfos);
 
-    vk::DynamicState dynamicStates[7];
+    vk::DynamicState dynamicStates[8];
     pipelineBuilder.setDynamicStates(dynamicStates);
 
     vk::VertexInputAttributeDescription vertexAttributeDescriptions[3];
@@ -1173,8 +1238,9 @@ void Renderer_VX::InitPipelines(
 
     dynamicStates[0] = vk::DynamicState::eViewport;
     dynamicStates[1] = vk::DynamicState::eScissor;
-    dynamicStates[2] = vk::DynamicState::eStencilOp;
-    pipelineBuilder.setDynamicStateCount(3);
+    dynamicStates[2] = vk::DynamicState::eStencilReference;
+    dynamicStates[3] = vk::DynamicState::eStencilOp;
+    pipelineBuilder.setDynamicStateCount(4);
 
     pipelineBuilder.setStencilTestEnable(true);
     vk::StencilOpState stencilOp;
@@ -1205,9 +1271,8 @@ void Renderer_VX::InitPipelines(
         vk::ShaderStageFlagBits::bFragment, {});
     pipelineBuilder.setStageCount(2);
 
-    dynamicStates[2] = vk::DynamicState::eStencilTestEnable;
-    dynamicStates[3] = vk::DynamicState::eStencilReference;
-    pipelineBuilder.setDynamicStateCount(4);
+    dynamicStates[4] = vk::DynamicState::eStencilTestEnable;
+    pipelineBuilder.setDynamicStateCount(5);
 
     stencilOp.setCompareOp(vk::CompareOp::eEqual);
     stencilOp.setWriteMask(0);
@@ -1247,10 +1312,10 @@ void Renderer_VX::InitPipelines(
     shaderStageInfos[1].setModule(gradientFragShader);
     m_GradientPipeline = pipelineBuilder.build(device).get();
 
-    dynamicStates[4] = vk::DynamicState::eBlendConstants;
-    dynamicStates[5] = vk::DynamicState::eColorBlendEnableEXT;
-    dynamicStates[6] = vk::DynamicState::eColorBlendEquationEXT;
-    pipelineBuilder.setDynamicStateCount(7);
+    dynamicStates[5] = vk::DynamicState::eBlendConstants;
+    dynamicStates[6] = vk::DynamicState::eColorBlendEnableEXT;
+    dynamicStates[7] = vk::DynamicState::eColorBlendEquationEXT;
+    pipelineBuilder.setDynamicStateCount(8);
 
     vertexAttributeDescriptions[1].setLocation(1);
     vertexAttributeDescriptions[1].setBinding(0);
