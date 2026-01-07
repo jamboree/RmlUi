@@ -244,18 +244,18 @@ void GfxContext_VX::InitInstance(std::vector<const char*>& extensions) {
     extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
     using Severity = vk::DebugUtilsMessageSeverityFlagBitsEXT;
     using Message = vk::DebugUtilsMessageTypeFlagBitsEXT;
-    vk::DebugUtilsMessengerCreateInfoEXT debugInfo;
+    vx::DebugUtilsMessengerCreateInfoEXT debugInfo;
     debugInfo.setMessageSeverity(Severity::bError);
     debugInfo.setMessageType(Message::bGeneral | Message::bValidation |
                              Message::bPerformance);
     debugInfo.setPfnUserCallback(
-        [](VkDebugUtilsMessageSeverityFlagBitsEXT /*messageSeverity*/,
-           VkDebugUtilsMessageTypeFlagsEXT /*messageType*/,
-           const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
+        [](vk::DebugUtilsMessageSeverityFlagBitsEXT /*messageSeverity*/,
+           vk::DebugUtilsMessageTypeFlagsEXT /*messageType*/,
+           const vk::DebugUtilsMessengerCallbackDataEXT& callbackData,
            void* /*pUserData*/) -> VkBool32 {
             Rml::Log::Message(Rml::Log::LT_ERROR, "Vulkan error (%s): %s",
-                              pCallbackData->pMessageIdName,
-                              pCallbackData->pMessage);
+                              callbackData.pMessageIdName,
+                              callbackData.pMessage);
             return false;
         });
     instInfo.attach(debugInfo);
