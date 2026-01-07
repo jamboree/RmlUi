@@ -327,9 +327,6 @@ void Renderer_VX::BeginFrame(vx::CommandBuffer commandBuffer) {
                                     vk::ShaderStageFlagBits::bVertex,
                                     VX_FIELD(VsInput, transform) = transform);
     m_CommandBuffer.cmdSetStencilTestEnable(m_EnableClipMask);
-    m_CommandBuffer.cmdSetStencilOp(
-        vk::StencilFaceFlagBits::eFrontAndBack, vk::StencilOp::eKeep,
-        vk::StencilOp::eKeep, vk::StencilOp::eKeep, vk::CompareOp::eAlways);
     m_CommandBuffer.cmdSetStencilReference(
         vk::StencilFaceFlagBits::eFrontAndBack, m_StencilRef);
 
@@ -601,7 +598,7 @@ void Renderer_VX::RenderToClipMask(Rml::ClipMaskOperation operation,
         break;
     case Rml::ClipMaskOperation::Intersect:
         stencilPassOp = vk::StencilOp::eIncrementAndClamp;
-        stencilTestValue = ++m_StencilRef;
+        stencilTestValue = m_StencilRef + 1;
         break;
     }
 
@@ -631,11 +628,9 @@ void Renderer_VX::RenderToClipMask(Rml::ClipMaskOperation operation,
     g.Draw(m_CommandBuffer);
 
     m_CommandBuffer.cmdSetStencilTestEnable(m_EnableClipMask);
-    m_CommandBuffer.cmdSetStencilOp(
-        vk::StencilFaceFlagBits::eFrontAndBack, vk::StencilOp::eKeep,
-        vk::StencilOp::eKeep, vk::StencilOp::eKeep, vk::CompareOp::eEqual);
     m_CommandBuffer.cmdSetStencilReference(
         vk::StencilFaceFlagBits::eFrontAndBack, stencilTestValue);
+    m_StencilRef = stencilTestValue;
 }
 
 inline Rml::Colourf ConvertToColorf(Rml::ColourbPremultiplied c0) {
@@ -782,6 +777,10 @@ void Renderer_VX::BeginLayer(Rml::LayerHandle handle, bool resume) {
         m_Gfx->m_DepthStencilImage.m_Image,
         vx::subresourceRange(vk::ImageAspectFlagBits::bDepth |
                              vk::ImageAspectFlagBits::bStencil));
+    if (resume || handle != 0) {
+        depthStencilImageBarrier.setOldLayout(
+            vk::ImageLayout::eAttachmentOptimal);
+    }
     depthStencilImageBarrier.setSrcStageAccess(
         vk::PipelineStageFlagBits2::bLateFragmentTests,
         vk::AccessFlagBits2::bDepthStencilAttachmentWrite);
@@ -1226,7 +1225,7 @@ void Renderer_VX::InitPipelines(
     vk::PipelineShaderStageCreateInfo shaderStageInfos[2];
     pipelineBuilder.setStages(shaderStageInfos);
 
-    vk::DynamicState dynamicStates[8];
+    vk::DynamicState dynamicStates[7];
     pipelineBuilder.setDynamicStates(dynamicStates);
 
     vk::VertexInputAttributeDescription vertexAttributeDescriptions[3];
@@ -1271,8 +1270,7 @@ void Renderer_VX::InitPipelines(
         vk::ShaderStageFlagBits::bFragment, {});
     pipelineBuilder.setStageCount(2);
 
-    dynamicStates[4] = vk::DynamicState::eStencilTestEnable;
-    pipelineBuilder.setDynamicStateCount(5);
+    dynamicStates[3] = vk::DynamicState::eStencilTestEnable;
 
     stencilOp.setCompareOp(vk::CompareOp::eEqual);
     stencilOp.setWriteMask(0);
@@ -1312,10 +1310,10 @@ void Renderer_VX::InitPipelines(
     shaderStageInfos[1].setModule(gradientFragShader);
     m_GradientPipeline = pipelineBuilder.build(device).get();
 
-    dynamicStates[5] = vk::DynamicState::eBlendConstants;
-    dynamicStates[6] = vk::DynamicState::eColorBlendEnableEXT;
-    dynamicStates[7] = vk::DynamicState::eColorBlendEquationEXT;
-    pipelineBuilder.setDynamicStateCount(8);
+    dynamicStates[4] = vk::DynamicState::eBlendConstants;
+    dynamicStates[5] = vk::DynamicState::eColorBlendEnableEXT;
+    dynamicStates[6] = vk::DynamicState::eColorBlendEquationEXT;
+    pipelineBuilder.setDynamicStateCount(7);
 
     vertexAttributeDescriptions[1].setLocation(1);
     vertexAttributeDescriptions[1].setBinding(0);
