@@ -1,10 +1,11 @@
 #version 460
+#extension GL_GOOGLE_include_directive : require
 
-#define BLUR_SIZE 7
-#define BLUR_NUM_WEIGHTS ((BLUR_SIZE + 1) / 2)
+#include "BlurDefines.h"
 
 layout(push_constant) uniform VsInput {
-	vec2 texelOffset;
+	// reserve: mat4 transform;
+	layout(offset = 64) vec2 texelOffset;
 };
 
 layout(location = 0) in vec3 inPosition;

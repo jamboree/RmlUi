@@ -102,7 +102,7 @@ private:
 
     template<class T>
     struct ResourcePool {
-        uintptr_t Create(const T& resource) {
+        uintptr_t Create(const T& resource, uint8_t useFlags = 1u) {
             uintptr_t index;
             if (m_FreeHead < m_Count) {
                 index = m_FreeHead;
@@ -112,7 +112,7 @@ private:
                 Alloc();
                 m_FreeHead = m_Count;
             }
-            m_Uses[index] = 1u;
+            m_Uses[index] = useFlags;
             m_Elems[index].m_Resource = resource;
             return index;
         }
@@ -228,15 +228,24 @@ private:
     Rml::TextureHandle CreateTexture(vk::Buffer buffer,
                                      Rml::Vector2i dimensions);
 
+    GeometryResource CreateGeometry(Rml::Span<const Rml::Vertex> vertices,
+                                    Rml::Span<const int> indices);
+
     void DestroyResource(GeometryResource& g);
     void DestroyResource(TextureResource& t);
     void DestroyResource(ShaderResource& s);
 
     void BeginLayer(Rml::LayerHandle handle, bool resume);
 
-    void BeginPostprocess(const ImagePair& colorImage);
+    void BeginPostprocess(unsigned index);
+
+    void PostprocessToTexture(unsigned index, bool fromTransfer);
+
+    void SetPassthroughTexture(unsigned index);
 
     void ResolveLayer(Rml::LayerHandle source, vk::Image dstImage);
+
+    void DrawFullscreenQuad(Rml::Vector2f uv_offset, Rml::Vector2f uv_scaling);
 
     const ImageAttachment& GetTopLayer() const {
         return m_SurfaceManager.GetLayer(m_SurfaceManager.GetTopLayerHandle());
@@ -248,11 +257,13 @@ private:
     void
     RenderFilters(Rml::Span<const Rml::CompiledFilterHandle> filterHandles);
 
-    void RenderFilter(const PassthroughFilter& filter);
-
     void RenderFilter(const FilterBase&) {}
 
-    void SwitchPipeline(vk::Pipeline pipeline);
+    void RenderFilter(const PassthroughFilter& filter);
+
+    void RenderFilter(const BlurFilter& filter);
+
+    void RenderBlur(float sigma, const Rml::LayerHandle (&layers)[2]);
 
     GfxContext_VX* m_Gfx = nullptr;
     ResourcePool<GeometryResource> m_GeometryResources;
@@ -265,13 +276,13 @@ private:
     vk::PipelineLayout m_BasicPipelineLayout;
     vk::PipelineLayout m_TexturePipelineLayout;
     vk::PipelineLayout m_GradientPipelineLayout;
-    vk::PipelineLayout m_PassthroughPipelineLayout;
     vk::Pipeline m_ClipPipeline;
     vk::Pipeline m_ColorPipeline;
     vk::Pipeline m_TexturePipeline;
     vk::Pipeline m_GradientPipeline;
     vk::Pipeline m_PassthroughPipeline;
     vk::Pipeline m_MsPassthroughPipeline;
+    vk::Pipeline m_BlurPipeline;
     vk::Sampler m_Sampler;
     vx::CommandBuffer m_CommandBuffer;
     vk::Rect2D m_Scissor;

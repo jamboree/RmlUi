@@ -142,14 +142,6 @@ vx::CommandBuffer GfxContext_VX::BeginFrame() {
     vk::CommandBufferBeginInfo beginInfo;
     beginInfo.setFlags(vk::CommandBufferUsageFlagBits::bOneTimeSubmit);
     check(commandBuffer.begin(beginInfo));
-
-    vk::Viewport viewport;
-    viewport.setWidth(float(m_FrameExtent.width));
-    viewport.setHeight(float(m_FrameExtent.height));
-    viewport.setMinDepth(0.f);
-    viewport.setMaxDepth(1.f);
-    commandBuffer.cmdSetViewport(0, 1, &viewport);
-
     return commandBuffer;
 }
 

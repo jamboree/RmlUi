@@ -1811,7 +1811,7 @@ void RenderInterface_GL3::RenderFilters(Rml::Span<const Rml::CompiledFilterHandl
 			glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 		}
 		break;
-#if 0
+#if 1
 		case FilterType::Blur:
 		{
 			glDisable(GL_BLEND);

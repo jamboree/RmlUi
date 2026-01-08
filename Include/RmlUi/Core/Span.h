@@ -49,6 +49,9 @@ public:
 	Span(const Vector<typename std::remove_const_t<T>>& container) : Span(container.data(), container.size()) {}
 	Span(Vector<T>& container) : Span(container.data(), container.size()) {}
 
+	template <unsigned N>
+	Span(T (&array)[N]) : Span(array, N) {}
+
 	T& operator[](size_t index) const
 	{
 		RMLUI_ASSERT(index < m_size);

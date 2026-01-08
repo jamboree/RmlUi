@@ -1,9 +1,14 @@
 #version 460
+#extension GL_GOOGLE_include_directive : require
 
-uniform sampler2D tex;
-uniform float weights[BLUR_NUM_WEIGHTS];
-uniform vec2 texCoordMin;
-uniform vec2 texCoordMax;
+#include "BlurDefines.h"
+
+layout(set = 0, binding = 0) uniform sampler2D tex;
+layout(set = 0, binding = 1) uniform FsInput {
+	vec2 texCoordMin;
+	vec2 texCoordMax;
+	float weights[BLUR_NUM_WEIGHTS];
+};
 
 layout(location = 0) in vec2 fragTexCoord[BLUR_SIZE];
 layout(location = 0) out vec4 finalColor;
