@@ -10,6 +10,21 @@
 namespace vk = vklite;
 namespace vma = vk::vma;
 
+namespace vklite {
+    inline bool operator==(const Offset2D& a, const Offset2D& b) {
+        return a.x == b.x && a.y == b.y;
+    }
+    inline bool operator==(const Offset3D& a, const Offset3D& b) {
+        return a.x == b.x && a.y == b.y && a.z == b.z;
+    }
+    inline bool operator==(const Extent2D& a, const Extent2D& b) {
+        return a.width == b.width && a.height == b.height;
+    }
+    inline bool operator==(const Extent3D& a, const Extent3D& b) {
+        return a.width == b.width && a.height == b.height && a.depth == b.depth;
+    }
+} // namespace vklite
+
 namespace vx {
     template<class T>
     struct List {
@@ -71,7 +86,7 @@ namespace vx {
     };
 
     inline vk::Offset3D toOffset3D(vk::Offset2D offset) {
-        return {offset.x, offset.y, 1};
+        return {offset.x, offset.y, 0};
     }
 
     inline vk::Extent3D toExtent3D(vk::Extent2D offset) {
@@ -97,6 +112,8 @@ namespace vx {
         vk::Extent3D getExtent() const {
             return vk::Extent3D(max.x - min.x, max.y - min.y, max.z - min.z);
         }
+
+        bool operator==(const Range3D&) const = default;
     };
 
     struct BufferOffset {
@@ -673,10 +690,10 @@ namespace vx {
     };
 
     struct BufferDescriptorBase : vk::DescriptorBufferInfo {
-        BufferDescriptorBase(vk::Buffer buffer, vk::DeviceSize offset,
-                             vk::DeviceSize range) noexcept {
-            setBuffer(buffer);
-            setOffset(offset);
+        BufferDescriptorBase(const BufferOffset& buffer,
+                             vk::DeviceSize range = VK_WHOLE_SIZE) noexcept {
+            setBuffer(buffer.m_buffer);
+            setOffset(buffer.m_offset);
             setRange(range);
         }
 

@@ -4,8 +4,8 @@
 #include "BlurDefines.h"
 
 layout(push_constant) uniform VsInput {
-	// reserve: mat4 transform;
-	layout(offset = 64) vec2 texelOffset;
+	mat4 _pad;
+	vec2 texelOffset;
 };
 
 layout(location = 0) in vec3 inPosition;

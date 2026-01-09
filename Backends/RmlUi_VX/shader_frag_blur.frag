@@ -17,7 +17,7 @@ void main() {
 	vec4 color = vec4(0.0, 0.0, 0.0, 0.0);
 	for (int i = 0; i < BLUR_SIZE; ++i) {
 		vec2 in_region = step(texCoordMin, fragTexCoord[i]) * step(fragTexCoord[i], texCoordMax);
-		color += texture(tex, fragTexCoord[i]) * in_region.x * in_region.y * weights[abs(i - BLUR_NUM_WEIGHTS + 1)];
+		color += texture(tex, fragTexCoord[i]) * (in_region.x * in_region.y * weights[abs(i - BLUR_NUM_WEIGHTS + 1)]);
 	}
 	finalColor = color;
 }

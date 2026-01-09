@@ -85,7 +85,8 @@ struct Renderer_VX : Rml::RenderInterface {
 
 private:
     struct TextureDescriptorSet;
-    struct GradientDescriptorSet;
+    struct UniformDescriptorSet;
+    struct BlurDescriptorSet;
 
     struct GeometryResource;
     struct TextureResource;
@@ -231,6 +232,8 @@ private:
     GeometryResource CreateGeometry(Rml::Span<const Rml::Vertex> vertices,
                                     Rml::Span<const int> indices);
 
+    ShaderResource CreateShaderResource(const void* data, size_t size);
+
     void DestroyResource(GeometryResource& g);
     void DestroyResource(TextureResource& t);
     void DestroyResource(ShaderResource& s);
@@ -239,13 +242,14 @@ private:
 
     void BeginPostprocess(unsigned index);
 
-    void PostprocessToTexture(unsigned index, bool fromTransfer);
+    void PostprocessToSample(unsigned index, bool fromTransfer);
 
-    void SetPassthroughTexture(unsigned index);
+    void SetSample(unsigned index, vk::PipelineLayout pipelineLayout);
 
     void ResolveLayer(Rml::LayerHandle source, vk::Image dstImage);
 
-    void DrawFullscreenQuad(Rml::Vector2f uv_offset, Rml::Vector2f uv_scaling);
+    Rml::CompiledGeometryHandle UseFullscreenQuad(Rml::Vector2f uv_offset,
+                                                  Rml::Vector2f uv_scaling);
 
     const ImageAttachment& GetTopLayer() const {
         return m_SurfaceManager.GetLayer(m_SurfaceManager.GetTopLayerHandle());
@@ -263,7 +267,7 @@ private:
 
     void RenderFilter(const BlurFilter& filter);
 
-    void RenderBlur(float sigma, const Rml::LayerHandle (&layers)[2]);
+    void RenderBlur(float sigma, const unsigned (&postprocess)[2]);
 
     GfxContext_VX* m_Gfx = nullptr;
     ResourcePool<GeometryResource> m_GeometryResources;
@@ -271,11 +275,12 @@ private:
     ResourcePool<ShaderResource> m_ShaderResources;
     SurfaceManager m_SurfaceManager;
     vx::DescriptorSetLayout<TextureDescriptorSet> m_TextureDescriptorSetLayout;
-    vx::DescriptorSetLayout<GradientDescriptorSet>
-        m_GradientDescriptorSetLayout;
+    vx::DescriptorSetLayout<UniformDescriptorSet> m_UniformDescriptorSetLayout;
+    vx::DescriptorSetLayout<BlurDescriptorSet> m_BlurDescriptorSetLayout;
     vk::PipelineLayout m_BasicPipelineLayout;
     vk::PipelineLayout m_TexturePipelineLayout;
     vk::PipelineLayout m_GradientPipelineLayout;
+    vk::PipelineLayout m_BlurPipelineLayout;
     vk::Pipeline m_ClipPipeline;
     vk::Pipeline m_ColorPipeline;
     vk::Pipeline m_TexturePipeline;
