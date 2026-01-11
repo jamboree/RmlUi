@@ -15,27 +15,27 @@ struct Renderer_VX : Rml::RenderInterface {
     void ResetRenderTarget();
     void ReleaseAllResourceUse(uint8_t useFlags);
 
-    /// Called by RmlUi when it wants to compile geometry it believes will be
-    /// static for the forseeable future.
+    /// Called by RmlUi when it wants to compile geometry to be rendered later.
     Rml::CompiledGeometryHandle
     CompileGeometry(Rml::Span<const Rml::Vertex> vertices,
                     Rml::Span<const int> indices) override;
-    /// Called by RmlUi when it wants to render application-compiled geometry.
+    /// Called by RmlUi when it wants to render geometry.
     void RenderGeometry(Rml::CompiledGeometryHandle handle,
                         Rml::Vector2f translation,
                         Rml::TextureHandle texture) override;
-    /// Called by RmlUi when it wants to release application-compiled geometry.
+    /// Called by RmlUi when it wants to release geometry.
     void ReleaseGeometry(Rml::CompiledGeometryHandle geometry) override;
 
     /// Called by RmlUi when a texture is required by the library.
     Rml::TextureHandle LoadTexture(Rml::Vector2i& texture_dimensions,
                                    const Rml::String& source) override;
-    /// Called by RmlUi when a texture is required to be built from an
-    /// internally-generated sequence of pixels.
+    /// Called by RmlUi when a texture is required to be generated from a
+    /// sequence of pixels in memory.
     Rml::TextureHandle
     GenerateTexture(Rml::Span<const Rml::byte> source_data,
                     Rml::Vector2i source_dimensions) override;
-    /// Called by RmlUi when a loaded texture is no longer required.
+    /// Called by RmlUi when a loaded or generated texture is no longer
+    /// required.
     void ReleaseTexture(Rml::TextureHandle texture_handle) override;
 
     /// Called by RmlUi when it wants to enable or disable scissoring to clip
@@ -44,8 +44,8 @@ struct Renderer_VX : Rml::RenderInterface {
     /// Called by RmlUi when it wants to change the scissor region.
     void SetScissorRegion(Rml::Rectanglei region) override;
 
-    /// Called by RmlUi when it wants to set the current transform matrix to a
-    /// new matrix.
+    /// Called by RmlUi when it wants the renderer to use a new transform
+    /// matrix.
     void SetTransform(const Rml::Matrix4f* transform) override;
 
     /// Called by RmlUi when it wants to enable or disable the clip mask.
@@ -71,16 +71,27 @@ struct Renderer_VX : Rml::RenderInterface {
     /// Called by RmlUi when it no longer needs a previously compiled shader.
     void ReleaseShader(Rml::CompiledShaderHandle shader) override;
 
+    /// Called by RmlUi when it wants to push a new layer onto the render stack,
+    /// setting it as the new render target.
     Rml::LayerHandle PushLayer() override;
+    /// Composite two layers with the given blend mode and apply filters.
     void CompositeLayers(
         Rml::LayerHandle source, Rml::LayerHandle destination,
         Rml::BlendMode blend_mode,
         Rml::Span<const Rml::CompiledFilterHandle> filters) override;
+    /// Called by RmlUi when it wants to pop the render layer stack, setting the
+    /// new top layer as the render target.
     void PopLayer() override;
 
+    /// Called by RmlUi when it wants to store the current layer as a new
+    /// texture to be rendered later with geometry.
+    Rml::TextureHandle SaveLayerAsTexture() override;
+
+    /// Called by RmlUi when it wants to compile a new filter.
     Rml::CompiledFilterHandle
     CompileFilter(const Rml::String& name,
                   const Rml::Dictionary& parameters) override;
+    /// Called by RmlUi when it no longer needs a previously compiled filter.
     void ReleaseFilter(Rml::CompiledFilterHandle filter) override;
 
 private:
@@ -238,7 +249,11 @@ private:
     void DestroyResource(TextureResource& t);
     void DestroyResource(ShaderResource& s);
 
-    void BeginLayer(Rml::LayerHandle handle, bool resume);
+    void BeginLayerRendering(Rml::LayerHandle handle);
+
+    void ActivateLayerRendering();
+
+    void EndLayerRendering();
 
     void BeginPostprocess(unsigned index);
 
@@ -267,6 +282,8 @@ private:
 
     void RenderFilter(const BlurFilter& filter);
 
+    void RenderFilter(const ColorMatrixFilter& filter);
+
     void RenderBlur(float sigma, const unsigned (&postprocess)[2]);
 
     GfxContext_VX* m_Gfx = nullptr;
@@ -280,20 +297,25 @@ private:
     vk::PipelineLayout m_BasicPipelineLayout;
     vk::PipelineLayout m_TexturePipelineLayout;
     vk::PipelineLayout m_GradientPipelineLayout;
+    vk::PipelineLayout m_ColorMatrixPipelineLayout;
     vk::PipelineLayout m_BlurPipelineLayout;
     vk::Pipeline m_ClipPipeline;
     vk::Pipeline m_ColorPipeline;
-    vk::Pipeline m_TexturePipeline;
     vk::Pipeline m_GradientPipeline;
+    vk::Pipeline m_TexturePipeline;
     vk::Pipeline m_PassthroughPipeline;
     vk::Pipeline m_MsPassthroughPipeline;
+    vk::Pipeline m_ColorMatrixPipeline;
     vk::Pipeline m_BlurPipeline;
     vk::Sampler m_Sampler;
     vx::CommandBuffer m_CommandBuffer;
     vk::Rect2D m_Scissor;
     // Rml::Matrix4f m_Transform;
     Rml::CompiledGeometryHandle m_FullscreenQuadGeometry = 0;
+    Rml::LayerHandle m_CurrentLayer = 0;
     uint32_t m_StencilRef = 0;
     bool m_EnableScissor = false;
     bool m_EnableClipMask = false;
+    bool m_LayerRendering = false;
+    bool m_DepthStencilInitialized = false;
 };

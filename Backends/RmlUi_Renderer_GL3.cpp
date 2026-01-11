@@ -1824,7 +1824,6 @@ void RenderInterface_GL3::RenderFilters(Rml::Span<const Rml::CompiledFilterHandl
 			glEnable(GL_BLEND);
 		}
 		break;
-#if 0
 		case FilterType::DropShadow:
 		{
 			UseProgram(ProgramId::DropShadow);
@@ -1906,7 +1905,6 @@ void RenderInterface_GL3::RenderFilters(Rml::Span<const Rml::CompiledFilterHandl
 			Rml::Log::Message(Rml::Log::LT_WARNING, "Unhandled render filter %d.", (int)type);
 		}
 		break;
-#endif
 		}
 	}
 

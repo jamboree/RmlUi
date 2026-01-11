@@ -454,9 +454,7 @@ ImageAttachment GfxContext_VX::CreateImageAttachment(
     vk::Format format, vk::ImageUsageFlags usage,
     vk::ImageAspectFlags aspectFlags, vk::SampleCountFlagBits sampleCount) {
     auto imageInfo = vx::image2DCreateInfo(format, m_FrameExtent, usage);
-    imageInfo.setSamples(sampleCount == vk::SampleCountFlagBits(0)
-                             ? m_SampleCount
-                             : sampleCount);
+    imageInfo.setSamples(sampleCount);
 
     vma::AllocationCreateInfo allocationInfo;
     allocationInfo.setFlags(vma::AllocationCreateFlagBits::bDedicatedMemory);
