@@ -1,8 +1,10 @@
 #version 460
+#extension GL_GOOGLE_include_directive : require
 
-layout(set = 0, binding = 0) uniform sampler2D tex;
-layout(push_constant) uniform FsInput {
-    layout(offset = 64) mat4 colorMatrix;
+#include "BindlessTextures.h"
+
+layout(set = 1, binding = 0) uniform FsInput {
+    mat4 colorMatrix;
 };
 
 layout(location = 0) in vec2 fragTexCoord;
@@ -15,7 +17,7 @@ void main() {
 	// In the general case we should do the matrix transformation in non-premultiplied space. However, without alpha
 	// transformations, we can do it directly in premultiplied space to avoid the extra division and multiplication
 	// steps. In this space, the constant term needs to be multiplied by the alpha value, instead of unity.
-	vec4 texColor = texture(tex, fragTexCoord);
+	vec4 texColor = texture(sampler2D(textures[texIdx], mySampler), fragTexCoord);
 	vec3 transformedColor = vec3(colorMatrix * texColor);
 	finalColor = vec4(transformedColor, texColor.a);
 }

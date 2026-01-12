@@ -1,14 +1,13 @@
 #version 460
+#extension GL_GOOGLE_include_directive : require
 
-layout(set = 0, binding = 0) uniform sampler mySampler;
-layout(set = 0, binding = 1) uniform texture2D tex;
-layout(set = 0, binding = 2) uniform texture2D texMask;
+#include "BindlessTextures.h"
 
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 0) out vec4 finalColor;
 
 void main() {
-	vec4 texColor = texture(sampler2D(tex, mySampler), fragTexCoord);
-	float maskAlpha = texture(sampler2D(texMask, mySampler), fragTexCoord).a;
+	vec4 texColor = texture(sampler2D(textures[texIdx], mySampler), fragTexCoord);
+	float maskAlpha = texture(sampler2D(textures[3], mySampler), fragTexCoord).a;
 	finalColor = texColor * maskAlpha;
 }

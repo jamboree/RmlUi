@@ -191,21 +191,23 @@ struct Renderer_VX::UniformDescriptorSet {
     VX_BINDING(0, vx::UniformBufferDescriptor, Stages) uniform;
 };
 
-struct Renderer_VX::BlendMaskDescriptorSet {
-    static constexpr vk::ShaderStageFlags Stages =
-        vk::ShaderStageFlagBits::bFragment;
-
-    VX_BINDING(0, vx::ImmutableSamplerDescriptor<0>, Stages) mySampler;
-    VX_BINDING(1, vx::SampledImageDescriptor, Stages) tex;
-    VX_BINDING(2, vx::SampledImageDescriptor, Stages) texMask;
-};
-
 struct Renderer_VX::BlurDescriptorSet {
     static constexpr vk::ShaderStageFlags Stages =
         vk::ShaderStageFlagBits::bFragment;
 
     VX_BINDING(0, vx::CombinedImageImmutableSamplerDescriptor<0>, Stages) tex;
     VX_BINDING(1, vx::UniformBufferDescriptor, Stages) input;
+};
+
+struct Renderer_VX::FilterDescriptorSet {
+    static constexpr vk::ShaderStageFlags Stages =
+        vk::ShaderStageFlagBits::bFragment;
+    static constexpr auto BindingFlags =
+        vk::DescriptorBindingFlagBits::bUpdateAfterBind |
+        vk::DescriptorBindingFlagBits::bPartiallyBound;
+
+    VX_BINDING(0, vx::ImmutableSamplerDescriptor<0>, Stages) mySampler;
+    VX_BINDING(1, vx::SampledImageDescriptor[4], Stages, BindingFlags) textures;
 };
 
 struct Renderer_VX::LayerState {
@@ -278,23 +280,6 @@ Renderer_VX::SurfaceManager::GetLayerState(Rml::LayerHandle layer) {
     return m_layerStates[layer];
 }
 
-const ImageAttachment&
-Renderer_VX::SurfaceManager::GetPostprocess(GfxContext_VX& gfx,
-                                            unsigned index) {
-    RMLUI_ASSERT(index < std::size(m_postprocess));
-    auto& fb = m_postprocess[index];
-    if (!fb.m_Image) {
-        fb = gfx.CreateImageAttachment(
-            gfx.m_SwapchainImageFormat,
-            vk::ImageUsageFlagBits::bColorAttachment |
-                vk::ImageUsageFlagBits::bSampled |
-                vk::ImageUsageFlagBits::bTransferSrc |
-                vk::ImageUsageFlagBits::bTransferDst,
-            vk::ImageAspectFlagBits::bColor, vk::SampleCountFlagBits::b1);
-    }
-    return fb;
-}
-
 Renderer_VX::Renderer_VX() = default;
 Renderer_VX::~Renderer_VX() = default;
 
@@ -310,6 +295,25 @@ bool Renderer_VX::Init(GfxContext_VX& gfx) {
     samplerInfo.setAddressModeV(vk::SamplerAddressMode::eRepeat);
     samplerInfo.setAddressModeW(vk::SamplerAddressMode::eRepeat);
     m_Sampler = device.createSampler(samplerInfo).get();
+
+    vk::DescriptorPoolCreateInfo descriptorPoolInfo;
+    descriptorPoolInfo.setFlags(
+        vk::DescriptorPoolCreateFlagBits::bUpdateAfterBind);
+    descriptorPoolInfo.setMaxSets(100);
+    vk::DescriptorPoolSize poolSizes[] = {
+        {vk::DescriptorType::eSampler, 1},
+        {vk::DescriptorType::eSampledImage, 4}};
+    descriptorPoolInfo.setPoolSizeCount(std::size(poolSizes));
+    m_DescriptorPool = device.createDescriptorPool(descriptorPoolInfo).get();
+
+    m_FilterDescriptorSet =
+        device
+            .allocateTypedDescriptorSet<FilterDescriptorSet>(
+                m_DescriptorPool, m_FilterDescriptorSetLayout)
+            .get();
+    device.updateDescriptorSets({
+        m_FilterDescriptorSet->mySampler = vk::Sampler(), // immutable
+    });
 
     InitPipelineLayouts();
 
@@ -375,11 +379,8 @@ void Renderer_VX::Destroy() {
     if (m_TexturePipelineLayout) {
         device.destroyPipelineLayout(m_TexturePipelineLayout);
     }
-    if (m_ColorMatrixPipelineLayout) {
-        device.destroyPipelineLayout(m_ColorMatrixPipelineLayout);
-    }
-    if (m_BlendMaskPipelineLayout) {
-        device.destroyPipelineLayout(m_BlendMaskPipelineLayout);
+    if (m_FilterPipelineLayout) {
+        device.destroyPipelineLayout(m_FilterPipelineLayout);
     }
     if (m_BlurPipelineLayout) {
         device.destroyPipelineLayout(m_BlurPipelineLayout);
@@ -390,11 +391,11 @@ void Renderer_VX::Destroy() {
     if (m_UniformDescriptorSetLayout) {
         device.destroyDescriptorSetLayout(m_UniformDescriptorSetLayout);
     }
-    if (m_BlendMaskDescriptorSetLayout) {
-        device.destroyDescriptorSetLayout(m_BlendMaskDescriptorSetLayout);
-    }
     if (m_BlurDescriptorSetLayout) {
         device.destroyDescriptorSetLayout(m_BlurDescriptorSetLayout);
+    }
+    if (m_FilterDescriptorSetLayout) {
+        device.destroyDescriptorSetLayout(m_FilterDescriptorSetLayout);
     }
 }
 
@@ -417,6 +418,7 @@ static Rml::Matrix4f Project(vk::Extent2D extent,
 void Renderer_VX::BeginFrame(vx::CommandBuffer commandBuffer) {
     m_CommandBuffer = commandBuffer;
     m_StencilRef = 1;
+    m_PostprocessPrimaryIndex = 0;
     m_EnableScissor = false;
     m_EnableClipMask = false;
     m_LayerRendering = false;
@@ -437,6 +439,17 @@ void Renderer_VX::BeginFrame(vx::CommandBuffer commandBuffer) {
     m_CommandBuffer.cmdSetStencilTestEnable(m_EnableClipMask);
     m_CommandBuffer.cmdSetStencilReference(
         vk::StencilFaceFlagBits::eFrontAndBack, m_StencilRef);
+
+    {
+        vk::BindDescriptorSetsInfo bindDescriptorSetsInfo;
+        bindDescriptorSetsInfo.setLayout(m_TexturePipelineLayout);
+        bindDescriptorSetsInfo.setFirstSet(0);
+        bindDescriptorSetsInfo.setDescriptorSetCount(1);
+        bindDescriptorSetsInfo.setDescriptorSets(&m_FilterDescriptorSet);
+        bindDescriptorSetsInfo.setStageFlags(
+            vk::ShaderStageFlagBits::bFragment);
+        m_CommandBuffer.cmdBindDescriptorSets2(bindDescriptorSetsInfo);
+    }
 
     const auto topLayer = m_SurfaceManager.PushLayer(*m_Gfx);
     BeginLayerRendering(topLayer);
@@ -903,8 +916,25 @@ void Renderer_VX::EndLayerRendering() {
     }
 }
 
+const ImageAttachment& Renderer_VX::GetPostprocess(unsigned index) {
+    RMLUI_ASSERT(index < std::size(m_SurfaceManager.m_postprocess));
+    auto& fb = m_SurfaceManager.m_postprocess[index];
+    if (!fb.m_Image) {
+        fb = m_Gfx->CreateImageAttachment(
+            m_Gfx->m_SwapchainImageFormat,
+            vk::ImageUsageFlagBits::bColorAttachment |
+                vk::ImageUsageFlagBits::bSampled |
+                vk::ImageUsageFlagBits::bTransferSrc |
+                vk::ImageUsageFlagBits::bTransferDst,
+            vk::ImageAspectFlagBits::bColor, vk::SampleCountFlagBits::b1);
+        m_Gfx->m_Device.updateDescriptorSets(
+            {m_FilterDescriptorSet->textures[index] = fb.m_ImageView});
+    }
+    return fb;
+}
+
 vk::Image Renderer_VX::BeginPostprocess(unsigned index) {
-    const auto& colorImage = m_SurfaceManager.GetPostprocess(*m_Gfx, index);
+    const auto& colorImage = GetPostprocess(index);
     vx::ImageMemoryBarrierState colorImageBarrier;
 
     colorImageBarrier.init(
@@ -961,12 +991,15 @@ void Renderer_VX::TransitionToSample(vk::Image image, bool fromTransfer) {
     m_CommandBuffer.cmdPipelineBarriers(imageBarrier);
 }
 
-void Renderer_VX::SetSample(unsigned index, vk::PipelineLayout pipelineLayout) {
-    const vx::DescriptorSet<TextureDescriptorSet> descriptorSet;
-    m_CommandBuffer.cmdPushDescriptorSetKHR(
-        vk::PipelineBindPoint::eGraphics, pipelineLayout, 0,
-        {descriptorSet->tex =
-             m_SurfaceManager.GetPostprocess(*m_Gfx, index).m_ImageView});
+struct TexInput {
+    uint8_t _pad[128];
+    unsigned texIdx;
+};
+
+void Renderer_VX::SetSample(unsigned index) {
+    m_CommandBuffer.cmdPushConstant(m_FilterPipelineLayout,
+                                    vk::ShaderStageFlagBits::bFragment,
+                                    VX_FIELD(TexInput, texIdx) = index);
 }
 
 void Renderer_VX::ResolveLayer(Rml::LayerHandle source, vk::Image dstImage) {
@@ -1064,8 +1097,7 @@ void Renderer_VX::CompositeLayers(
     // the multi-sampled framebuffer in any case.
     // @performance If we have BlendMode::Replace and no filters or mask then we
     // can just blit directly to the destination.
-    const auto postprocessImage =
-        m_SurfaceManager.GetPostprocess(*m_Gfx, 0).m_Image;
+    const auto postprocessImage = GetPostprocess(PostprocessPrimary()).m_Image;
     ResolveLayer(source, postprocessImage);
 
     TransitionToSample(postprocessImage, true);
@@ -1076,7 +1108,7 @@ void Renderer_VX::CompositeLayers(
 
     BeginLayerRendering(destination);
     ActivateLayerRendering();
-    SetSample(0, m_TexturePipelineLayout);
+    SetSample(PostprocessPrimary());
 
     m_CommandBuffer.cmdBindPipeline(vk::PipelineBindPoint::eGraphics,
                                     m_Gfx->m_SampleCount ==
@@ -1132,12 +1164,13 @@ Rml::TextureHandle Renderer_VX::SaveLayerAsTexture() {
     EndLayerRendering();
 
     const auto topLayer = m_SurfaceManager.GetTopLayerHandle();
-    ResolveLayer(topLayer, m_SurfaceManager.GetPostprocess(*m_Gfx, 0).m_Image);
+    const auto postprocessImage = GetPostprocess(PostprocessPrimary()).m_Image;
+    ResolveLayer(topLayer, postprocessImage);
 
     vx::ImageMemoryBarrierState imageBarriers[2];
     auto& [srcImageBarrier, dstImageBarrier] = imageBarriers;
 
-    srcImageBarrier.init(m_SurfaceManager.GetPostprocess(*m_Gfx, 0).m_Image,
+    srcImageBarrier.init(postprocessImage,
                          vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
     srcImageBarrier.setOldLayout(vk::ImageLayout::eTransferDstOptimal);
     srcImageBarrier.setSrcStageAccess(vk::PipelineStageFlagBits2::bTransfer,
@@ -1219,7 +1252,7 @@ Rml::CompiledFilterHandle Renderer_VX::SaveLayerAsMaskImage() {
     EndLayerRendering();
 
     const auto topLayer = m_SurfaceManager.GetTopLayerHandle();
-    const auto maskImage = m_SurfaceManager.GetPostprocess(*m_Gfx, 3).m_Image;
+    const auto maskImage = GetPostprocess(3).m_Image;
     ResolveLayer(topLayer, maskImage);
 
     TransitionToSample(maskImage, true);
@@ -1372,12 +1405,12 @@ void Renderer_VX::InitPipelineLayouts() {
         vk::DescriptorSetLayoutCreateFlagBits::bPushDescriptorKHR));
 
     check(device.createTypedDescriptorSetLayoutWithContext(
-        &m_BlendMaskDescriptorSetLayout, context,
+        &m_BlurDescriptorSetLayout, context,
         vk::DescriptorSetLayoutCreateFlagBits::bPushDescriptorKHR));
 
     check(device.createTypedDescriptorSetLayoutWithContext(
-        &m_BlurDescriptorSetLayout, context,
-        vk::DescriptorSetLayoutCreateFlagBits::bPushDescriptorKHR));
+        &m_FilterDescriptorSetLayout, context,
+        vk::DescriptorSetLayoutCreateFlagBits::bUpdateAfterBindPool));
 
     vk::PushConstantRange pushConstantRanges[2];
     auto& [vertPushConstantRange, fragPushConstantRange] = pushConstantRanges;
@@ -1387,8 +1420,7 @@ void Renderer_VX::InitPipelineLayouts() {
 
     fragPushConstantRange.setStageFlags(vk::ShaderStageFlagBits::bFragment);
     fragPushConstantRange.setOffset(64);
-    fragPushConstantRange.setSize(sizeof(ColorMatrixFsInput));
-    fragPushConstantRange.size -= fragPushConstantRange.offset;
+    fragPushConstantRange.setSize(4);
 
     vk::PipelineLayoutCreateInfo pipelineLayoutInfo;
     pipelineLayoutInfo.setPushConstantRangeCount(1);
@@ -1409,18 +1441,24 @@ void Renderer_VX::InitPipelineLayouts() {
     m_TexturePipelineLayout =
         device.createPipelineLayout(pipelineLayoutInfo).get();
 
+    pipelineLayoutInfo.setSetLayouts(&m_FilterDescriptorSetLayout);
+
     pipelineLayoutInfo.setPushConstantRanges(&fragPushConstantRange);
+
+    m_FilterPipelineLayout =
+        device.createPipelineLayout(pipelineLayoutInfo).get();
+
+    vk::DescriptorSetLayout descriptorSetLayouts[] = {
+        m_FilterDescriptorSetLayout, m_UniformDescriptorSetLayout};
+    pipelineLayoutInfo.setSetLayoutCount(2);
+    pipelineLayoutInfo.setSetLayouts(descriptorSetLayouts);
 
     m_ColorMatrixPipelineLayout =
         device.createPipelineLayout(pipelineLayoutInfo).get();
 
     pipelineLayoutInfo.setPushConstantRanges(&vertPushConstantRange);
 
-    pipelineLayoutInfo.setSetLayouts(&m_BlendMaskDescriptorSetLayout);
-
-    m_BlendMaskPipelineLayout =
-        device.createPipelineLayout(pipelineLayoutInfo).get();
-
+    pipelineLayoutInfo.setSetLayoutCount(1);
     pipelineLayoutInfo.setSetLayouts(&m_BlurDescriptorSetLayout);
 
     m_BlurPipelineLayout =
@@ -1550,6 +1588,8 @@ void Renderer_VX::InitPipelines(
 
     m_TexturePipeline = pipelineBuilder.build(device).get();
 
+    pipelineBuilder.setLayout(m_FilterPipelineLayout);
+
     dynamicStates[4] = vk::DynamicState::eBlendConstants;
     dynamicStates[5] = vk::DynamicState::eColorBlendEnableEXT;
     dynamicStates[6] = vk::DynamicState::eColorBlendEquationEXT;
@@ -1574,12 +1614,10 @@ void Renderer_VX::InitPipelines(
     pipelineBuilder.setDynamicStateCount(4);
     pipelineBuilder.setBlendEnable(false);
 
-    pipelineBuilder.setLayout(m_ColorMatrixPipelineLayout);
     shaderStageInfos[1].setModule(colorMatrixFragShader);
 
     m_ColorMatrixPipeline = pipelineBuilder.build(device).get();
 
-    pipelineBuilder.setLayout(m_BlendMaskPipelineLayout);
     shaderStageInfos[1].setModule(blendMaskFragShader);
 
     m_BlendMaskPipeline = pipelineBuilder.build(device).get();
@@ -1726,8 +1764,8 @@ void Renderer_VX::RenderFilters(
 }
 
 void Renderer_VX::RenderFilter(const PassthroughFilter& filter) {
-    const auto postprocesImage = BeginPostprocess(1);
-    SetSample(0, m_TexturePipelineLayout);
+    const auto postprocesImage = BeginPostprocess(PostprocessSecondary());
+    SetSample(PostprocessPrimary());
 
     m_CommandBuffer.cmdBindPipeline(vk::PipelineBindPoint::eGraphics,
                                     m_PassthroughPipeline);
@@ -1745,7 +1783,7 @@ void Renderer_VX::RenderFilter(const PassthroughFilter& filter) {
     m_GeometryResources.Get(~m_FullscreenQuadGeometry).Draw(m_CommandBuffer);
     m_CommandBuffer.cmdEndRendering();
     TransitionToSample(postprocesImage, false);
-    m_SurfaceManager.SwapPostprocessPrimarySecondary();
+    SwapPostprocessPrimarySecondary();
 }
 
 void Renderer_VX::RenderFilter(const BlurFilter& filter) {
@@ -1753,52 +1791,44 @@ void Renderer_VX::RenderFilter(const BlurFilter& filter) {
 }
 
 void Renderer_VX::RenderFilter(const ColorMatrixFilter& filter) {
-    const auto postprocesImage = BeginPostprocess(1);
-    SetSample(0, m_ColorMatrixPipelineLayout);
+    const auto postprocesImage = BeginPostprocess(PostprocessSecondary());
+    SetSample(PostprocessPrimary());
 
     m_CommandBuffer.cmdBindPipeline(vk::PipelineBindPoint::eGraphics,
                                     m_ColorMatrixPipeline);
 
     m_CommandBuffer.cmdPushConstant(
-        m_ColorMatrixPipelineLayout, vk::ShaderStageFlagBits::bFragment,
+        m_FilterPipelineLayout, vk::ShaderStageFlagBits::bFragment,
         VX_FIELD(ColorMatrixFsInput, colorMatrix) = filter.colorMatrix);
 
     m_GeometryResources.Get(~m_FullscreenQuadGeometry).Draw(m_CommandBuffer);
     m_CommandBuffer.cmdEndRendering();
     TransitionToSample(postprocesImage, false);
-    m_SurfaceManager.SwapPostprocessPrimarySecondary();
+    SwapPostprocessPrimarySecondary();
 }
 
 void Renderer_VX::RenderFilter(const MaskImageFilter&) {
-    const auto postprocesImage = BeginPostprocess(1);
+    const auto postprocesImage = BeginPostprocess(PostprocessSecondary());
+    SetSample(PostprocessPrimary());
 
     m_CommandBuffer.cmdBindPipeline(vk::PipelineBindPoint::eGraphics,
                                     m_BlendMaskPipeline);
-    {
-        const vx::DescriptorSet<BlendMaskDescriptorSet> descriptorSet;
-        m_CommandBuffer.cmdPushDescriptorSetKHR(
-            vk::PipelineBindPoint::eGraphics, m_BlendMaskPipelineLayout, 0,
-            {descriptorSet->mySampler = vk::Sampler(), // immutable
-             descriptorSet->tex =
-                 m_SurfaceManager.GetPostprocess(*m_Gfx, 0).m_ImageView,
-             descriptorSet->texMask =
-                 m_SurfaceManager.GetPostprocess(*m_Gfx, 3).m_ImageView});
-    }
 
     m_GeometryResources.Get(~m_FullscreenQuadGeometry).Draw(m_CommandBuffer);
     m_CommandBuffer.cmdEndRendering();
     TransitionToSample(postprocesImage, false);
-    m_SurfaceManager.SwapPostprocessPrimarySecondary();
+    SwapPostprocessPrimarySecondary();
 }
 
-void Renderer_VX::RenderBlur(float sigma, const unsigned (&postprocess)[2]) {
+#if 0
+void Renderer_VX::RenderBlur(float sigma, const unsigned(&postprocess)[2]) {
     constexpr int max_num_passes = 10;
     constexpr float max_single_pass_sigma = 3.0f;
     const int pass_level = Rml::Math::Clamp(
         Rml::Math::Log2(int(sigma * (2.f / max_single_pass_sigma))), 0,
         max_num_passes);
     sigma = Rml::Math::Clamp(sigma / float(1 << pass_level), 0.0f,
-                             max_single_pass_sigma);
+        max_single_pass_sigma);
 
     const auto extent = m_Gfx->m_FrameExtent;
 
@@ -1806,7 +1836,7 @@ void Renderer_VX::RenderBlur(float sigma, const unsigned (&postprocess)[2]) {
     // resolution for large sigma.
     auto scissor = m_Scissor;
     m_CommandBuffer.cmdBindPipeline(vk::PipelineBindPoint::eGraphics,
-                                    m_PassthroughPipeline);
+        m_PassthroughPipeline);
     // m_CommandBuffer.cmdSetScissor(0, 1, &scissor);
     const vk::Bool32 colorBlendEnable = false;
     m_CommandBuffer.cmdSetColorBlendEnableEXT(0, 1, &colorBlendEnable);
@@ -1831,7 +1861,7 @@ void Renderer_VX::RenderBlur(float sigma, const unsigned (&postprocess)[2]) {
         scissor.extent.height /= 2;
         const auto j = i & 1;
         const auto postprocesImage = BeginPostprocess(postprocess[j ^ 1]);
-        SetSample(postprocess[j], m_TexturePipelineLayout);
+        SetSample(postprocess[j]);
         m_CommandBuffer.cmdSetScissor(0, 1, &scissor);
         m_GeometryResources.Get(~quadGeometry).Draw(m_CommandBuffer);
         m_CommandBuffer.cmdEndRendering();
@@ -1844,7 +1874,7 @@ void Renderer_VX::RenderBlur(float sigma, const unsigned (&postprocess)[2]) {
     // downscaling, we might need to move it from the source_destination buffer.
     if ((pass_level & 1) == 0) {
         const auto postprocesImage = BeginPostprocess(postprocess[1]);
-        SetSample(postprocess[0], m_TexturePipelineLayout);
+        SetSample(postprocess[0]);
         m_GeometryResources.Get(~m_FullscreenQuadGeometry)
             .Draw(m_CommandBuffer);
         m_CommandBuffer.cmdEndRendering();
@@ -1852,7 +1882,7 @@ void Renderer_VX::RenderBlur(float sigma, const unsigned (&postprocess)[2]) {
     }
 
     m_CommandBuffer.cmdBindPipeline(vk::PipelineBindPoint::eGraphics,
-                                    m_BlurPipeline);
+        m_BlurPipeline);
     // Set up uniforms.
     {
         BlurFsInput input;
@@ -1898,26 +1928,26 @@ void Renderer_VX::RenderBlur(float sigma, const unsigned (&postprocess)[2]) {
     auto& [srcImageBarrier, dstImageBarrier] = imageBarriers;
 
     srcImageBarrier.init(postprocesImage1,
-                         vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
+        vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
     srcImageBarrier.setOldLayout(vk::ImageLayout::eAttachmentOptimal);
     srcImageBarrier.setSrcStageAccess(
         vk::PipelineStageFlagBits2::bColorAttachmentOutput,
         vk::AccessFlagBits2::bColorAttachmentWrite);
     srcImageBarrier.setNewLayout(vk::ImageLayout::eTransferSrcOptimal);
     srcImageBarrier.setDstStageAccess(vk::PipelineStageFlagBits2::bTransfer,
-                                      vk::AccessFlagBits2::bTransferRead);
+        vk::AccessFlagBits2::bTransferRead);
 
     dstImageBarrier.init(postprocesImage0,
-                         vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
+        vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
     dstImageBarrier.setNewLayout(vk::ImageLayout::eTransferDstOptimal);
     dstImageBarrier.setDstStageAccess(vk::PipelineStageFlagBits2::bTransfer,
-                                      vk::AccessFlagBits2::bTransferWrite);
+        vk::AccessFlagBits2::bTransferWrite);
     m_CommandBuffer.cmdPipelineBarriers(rawIns(imageBarriers));
 
     const vx::Range3D srcRegion(vx::toOffset3D(scissor.getOffset()),
-                                vx::toExtent3D(scissor.getExtent()));
+        vx::toExtent3D(scissor.getExtent()));
     const vx::Range3D dstRegion(vx::toOffset3D(m_Scissor.getOffset()),
-                                vx::toExtent3D(m_Scissor.getExtent()));
+        vx::toExtent3D(m_Scissor.getExtent()));
 
     m_CommandBuffer.cmdBlitImage(
         srcImageBarrier.getImage(), srcRegion, srcImageBarrier.getNewLayout(),
@@ -1937,9 +1967,9 @@ void Renderer_VX::RenderBlur(float sigma, const unsigned (&postprocess)[2]) {
     const auto scale = 1 << pass_level;
     const vx::Range3D targetRegion(
         vk::Offset3D(srcRegion.min.x * scale, srcRegion.min.y * scale,
-                     srcRegion.min.z),
+            srcRegion.min.z),
         vk::Offset3D(srcRegion.max.x * scale, srcRegion.max.y * scale,
-                     srcRegion.max.z));
+            srcRegion.max.z));
     if (dstRegion != targetRegion) {
         m_CommandBuffer.cmdBlitImage(
             srcImageBarrier.getImage(), srcRegion,
@@ -1951,3 +1981,4 @@ void Renderer_VX::RenderBlur(float sigma, const unsigned (&postprocess)[2]) {
 
     TransitionToSample(postprocesImage0, true);
 }
+#endif // 0

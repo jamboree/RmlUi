@@ -101,8 +101,8 @@ struct Renderer_VX : Rml::RenderInterface {
 private:
     struct TextureDescriptorSet;
     struct UniformDescriptorSet;
-    struct BlendMaskDescriptorSet;
     struct BlurDescriptorSet;
+    struct FilterDescriptorSet;
 
     struct GeometryResource;
     struct TextureResource;
@@ -221,14 +221,8 @@ private:
             return Rml::LayerHandle(m_layers_size - 1);
         }
 
-        const ImageAttachment& GetPostprocess(GfxContext_VX& gfx,
-                                              unsigned index);
-
-        void SwapPostprocessPrimarySecondary() {
-            std::swap(m_postprocess[0], m_postprocess[1]);
-        }
-
     private:
+        friend struct Renderer_VX;
         // The number of active layers is manually tracked since we re-use the
         // framebuffers stored in the fb_layers stack.
         unsigned m_layers_size = 0;
@@ -260,11 +254,21 @@ private:
 
     void EndLayerRendering();
 
+    const ImageAttachment& GetPostprocess(unsigned index);
+
     vk::Image BeginPostprocess(unsigned index);
+
+    unsigned PostprocessPrimary() const { return m_PostprocessPrimaryIndex; }
+
+    unsigned PostprocessSecondary() const {
+        return m_PostprocessPrimaryIndex ^ 1;
+    }
+
+    void SwapPostprocessPrimarySecondary() { m_PostprocessPrimaryIndex ^= 1; }
 
     void TransitionToSample(vk::Image image, bool fromTransfer);
 
-    void SetSample(unsigned index, vk::PipelineLayout pipelineLayout);
+    void SetSample(unsigned index);
 
     void ResolveLayer(Rml::LayerHandle source, vk::Image dstImage);
 
@@ -300,14 +304,13 @@ private:
     SurfaceManager m_SurfaceManager;
     vx::DescriptorSetLayout<TextureDescriptorSet> m_TextureDescriptorSetLayout;
     vx::DescriptorSetLayout<UniformDescriptorSet> m_UniformDescriptorSetLayout;
-    vx::DescriptorSetLayout<BlendMaskDescriptorSet>
-        m_BlendMaskDescriptorSetLayout;
     vx::DescriptorSetLayout<BlurDescriptorSet> m_BlurDescriptorSetLayout;
+    vx::DescriptorSetLayout<FilterDescriptorSet> m_FilterDescriptorSetLayout;
     vk::PipelineLayout m_BasicPipelineLayout;
     vk::PipelineLayout m_TexturePipelineLayout;
     vk::PipelineLayout m_GradientPipelineLayout;
+    vk::PipelineLayout m_FilterPipelineLayout;
     vk::PipelineLayout m_ColorMatrixPipelineLayout;
-    vk::PipelineLayout m_BlendMaskPipelineLayout;
     vk::PipelineLayout m_BlurPipelineLayout;
     vk::Pipeline m_ClipPipeline;
     vk::Pipeline m_ColorPipeline;
@@ -319,12 +322,15 @@ private:
     vk::Pipeline m_BlendMaskPipeline;
     vk::Pipeline m_BlurPipeline;
     vk::Sampler m_Sampler;
+    vk::DescriptorPool m_DescriptorPool;
+    vx::DescriptorSet<FilterDescriptorSet> m_FilterDescriptorSet;
     vx::CommandBuffer m_CommandBuffer;
     vk::Rect2D m_Scissor;
     // Rml::Matrix4f m_Transform;
     Rml::CompiledGeometryHandle m_FullscreenQuadGeometry = 0;
     Rml::LayerHandle m_CurrentLayer = 0;
     uint32_t m_StencilRef = 0;
+    unsigned m_PostprocessPrimaryIndex = 0;
     bool m_EnableScissor = false;
     bool m_EnableClipMask = false;
     bool m_LayerRendering = false;
