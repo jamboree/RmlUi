@@ -1,6 +1,4 @@
 #version 460
-
-#extension GL_ARB_separate_shader_objects : enable
 #extension GL_EXT_scalar_block_layout : require
 
 #define MAX_NUM_STOPS 16
@@ -10,7 +8,7 @@
 #define REPEATING 1
 #define PI 3.14159265
 
-layout(std430, binding = 0) uniform GradientUniform {
+layout(std430, set = 1, binding = 0) uniform GradientUniform {
     // one of the above definitions
     int func;
     // linear: starting point, radial: center, conic: center

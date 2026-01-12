@@ -100,7 +100,6 @@ struct VsInput {
 };
 
 struct ColorMatrixFsInput {
-    uint8_t _pad[64];
     Rml::Matrix4f colorMatrix;
 };
 
@@ -296,14 +295,17 @@ bool Renderer_VX::Init(GfxContext_VX& gfx) {
     samplerInfo.setAddressModeW(vk::SamplerAddressMode::eRepeat);
     m_Sampler = device.createSampler(samplerInfo).get();
 
+    InitPipelineLayouts();
+
     vk::DescriptorPoolCreateInfo descriptorPoolInfo;
     descriptorPoolInfo.setFlags(
         vk::DescriptorPoolCreateFlagBits::bUpdateAfterBind);
-    descriptorPoolInfo.setMaxSets(100);
-    vk::DescriptorPoolSize poolSizes[] = {
+    descriptorPoolInfo.setMaxSets(1);
+    const vk::DescriptorPoolSize poolSizes[] = {
         {vk::DescriptorType::eSampler, 1},
         {vk::DescriptorType::eSampledImage, 4}};
     descriptorPoolInfo.setPoolSizeCount(std::size(poolSizes));
+    descriptorPoolInfo.setPoolSizes(poolSizes);
     m_DescriptorPool = device.createDescriptorPool(descriptorPoolInfo).get();
 
     m_FilterDescriptorSet =
@@ -311,11 +313,11 @@ bool Renderer_VX::Init(GfxContext_VX& gfx) {
             .allocateTypedDescriptorSet<FilterDescriptorSet>(
                 m_DescriptorPool, m_FilterDescriptorSetLayout)
             .get();
+#if 0
     device.updateDescriptorSets({
-        m_FilterDescriptorSet->mySampler = vk::Sampler(), // immutable
-    });
-
-    InitPipelineLayouts();
+m_FilterDescriptorSet->mySampler = vk::Sampler(), // immutable
+        });
+#endif // 0
 
     vk::PipelineRenderingCreateInfo renderingInfo;
     renderingInfo.setColorAttachmentCount(1);
@@ -440,16 +442,9 @@ void Renderer_VX::BeginFrame(vx::CommandBuffer commandBuffer) {
     m_CommandBuffer.cmdSetStencilReference(
         vk::StencilFaceFlagBits::eFrontAndBack, m_StencilRef);
 
-    {
-        vk::BindDescriptorSetsInfo bindDescriptorSetsInfo;
-        bindDescriptorSetsInfo.setLayout(m_TexturePipelineLayout);
-        bindDescriptorSetsInfo.setFirstSet(0);
-        bindDescriptorSetsInfo.setDescriptorSetCount(1);
-        bindDescriptorSetsInfo.setDescriptorSets(&m_FilterDescriptorSet);
-        bindDescriptorSetsInfo.setStageFlags(
-            vk::ShaderStageFlagBits::bFragment);
-        m_CommandBuffer.cmdBindDescriptorSets2(bindDescriptorSetsInfo);
-    }
+    m_CommandBuffer.cmdBindDescriptorSets(vk::PipelineBindPoint::eGraphics,
+                                          m_FilterPipelineLayout, 0, 1,
+                                          &m_FilterDescriptorSet);
 
     const auto topLayer = m_SurfaceManager.PushLayer(*m_Gfx);
     BeginLayerRendering(topLayer);
@@ -495,7 +490,7 @@ void Renderer_VX::RenderGeometry(Rml::CompiledGeometryHandle geometry,
         const auto& t = m_TextureResources.Use(~texture, useFlag);
         const vx::DescriptorSet<TextureDescriptorSet> descriptorSet;
         m_CommandBuffer.cmdPushDescriptorSetKHR(
-            vk::PipelineBindPoint::eGraphics, pipelineLayout, 0,
+            vk::PipelineBindPoint::eGraphics, pipelineLayout, 1,
             {descriptorSet->tex = t.m_ImageView});
     }
     m_CommandBuffer.cmdBindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
@@ -807,7 +802,7 @@ void Renderer_VX::RenderShader(Rml::CompiledShaderHandle shader,
 
     const vx::DescriptorSet<UniformDescriptorSet> descriptorSet;
     m_CommandBuffer.cmdPushDescriptorSetKHR(
-        vk::PipelineBindPoint::eGraphics, m_GradientPipelineLayout, 0,
+        vk::PipelineBindPoint::eGraphics, m_GradientPipelineLayout, 1,
         {descriptorSet->uniform = vx::UniformBufferDescriptor(s.m_Buffer)});
     m_CommandBuffer.cmdBindPipeline(vk::PipelineBindPoint::eGraphics,
                                     m_GradientPipeline);
@@ -992,7 +987,7 @@ void Renderer_VX::TransitionToSample(vk::Image image, bool fromTransfer) {
 }
 
 struct TexInput {
-    uint8_t _pad[128];
+    uint8_t _pad[72];
     unsigned texIdx;
 };
 
@@ -1419,46 +1414,43 @@ void Renderer_VX::InitPipelineLayouts() {
     vertPushConstantRange.setSize(sizeof(VsInput));
 
     fragPushConstantRange.setStageFlags(vk::ShaderStageFlagBits::bFragment);
-    fragPushConstantRange.setOffset(64);
+    fragPushConstantRange.setOffset(72);
     fragPushConstantRange.setSize(4);
 
     vk::PipelineLayoutCreateInfo pipelineLayoutInfo;
+    pipelineLayoutInfo.setPushConstantRanges(pushConstantRanges);
     pipelineLayoutInfo.setPushConstantRangeCount(1);
-    pipelineLayoutInfo.setPushConstantRanges(&vertPushConstantRange);
 
     m_BasicPipelineLayout =
         device.createPipelineLayout(pipelineLayoutInfo).get();
+    
+    pipelineLayoutInfo.setPushConstantRangeCount(2);
 
-    pipelineLayoutInfo.setSetLayoutCount(1);
-
-    pipelineLayoutInfo.setSetLayouts(&m_UniformDescriptorSetLayout);
-
-    m_GradientPipelineLayout =
-        device.createPipelineLayout(pipelineLayoutInfo).get();
-
-    pipelineLayoutInfo.setSetLayouts(&m_TextureDescriptorSetLayout);
+    vk::DescriptorSetLayout descriptorSetLayouts[] = {
+        m_FilterDescriptorSetLayout, m_TextureDescriptorSetLayout};
+    pipelineLayoutInfo.setSetLayoutCount(2);
+    pipelineLayoutInfo.setSetLayouts(descriptorSetLayouts);
 
     m_TexturePipelineLayout =
         device.createPipelineLayout(pipelineLayoutInfo).get();
 
-    pipelineLayoutInfo.setSetLayouts(&m_FilterDescriptorSetLayout);
+    descriptorSetLayouts[1] = m_UniformDescriptorSetLayout;
 
-    pipelineLayoutInfo.setPushConstantRanges(&fragPushConstantRange);
-
-    m_FilterPipelineLayout =
+    m_GradientPipelineLayout =
         device.createPipelineLayout(pipelineLayoutInfo).get();
 
-    vk::DescriptorSetLayout descriptorSetLayouts[] = {
-        m_FilterDescriptorSetLayout, m_UniformDescriptorSetLayout};
-    pipelineLayoutInfo.setSetLayoutCount(2);
-    pipelineLayoutInfo.setSetLayouts(descriptorSetLayouts);
+    // pipelineLayoutInfo.setPushConstantRanges(&fragPushConstantRange);
 
     m_ColorMatrixPipelineLayout =
         device.createPipelineLayout(pipelineLayoutInfo).get();
 
-    pipelineLayoutInfo.setPushConstantRanges(&vertPushConstantRange);
-
     pipelineLayoutInfo.setSetLayoutCount(1);
+
+    m_FilterPipelineLayout =
+        device.createPipelineLayout(pipelineLayoutInfo).get();
+
+    // pipelineLayoutInfo.setPushConstantRanges(&vertPushConstantRange);
+
     pipelineLayoutInfo.setSetLayouts(&m_BlurDescriptorSetLayout);
 
     m_BlurPipelineLayout =
@@ -1614,13 +1606,14 @@ void Renderer_VX::InitPipelines(
     pipelineBuilder.setDynamicStateCount(4);
     pipelineBuilder.setBlendEnable(false);
 
-    shaderStageInfos[1].setModule(colorMatrixFragShader);
-
-    m_ColorMatrixPipeline = pipelineBuilder.build(device).get();
-
     shaderStageInfos[1].setModule(blendMaskFragShader);
 
     m_BlendMaskPipeline = pipelineBuilder.build(device).get();
+
+    pipelineBuilder.setLayout(m_ColorMatrixPipelineLayout);
+    shaderStageInfos[1].setModule(colorMatrixFragShader);
+
+    m_ColorMatrixPipeline = pipelineBuilder.build(device).get();
 
     pipelineBuilder.setLayout(m_BlurPipelineLayout);
     shaderStageInfos[0].setModule(blurVertShader);
@@ -1797,9 +1790,18 @@ void Renderer_VX::RenderFilter(const ColorMatrixFilter& filter) {
     m_CommandBuffer.cmdBindPipeline(vk::PipelineBindPoint::eGraphics,
                                     m_ColorMatrixPipeline);
 
-    m_CommandBuffer.cmdPushConstant(
-        m_FilterPipelineLayout, vk::ShaderStageFlagBits::bFragment,
-        VX_FIELD(ColorMatrixFsInput, colorMatrix) = filter.colorMatrix);
+    {
+        ColorMatrixFsInput input{.colorMatrix = filter.colorMatrix};
+        const uint8_t useFlag = 2u << m_Gfx->m_FrameNumber;
+        const auto resource = m_ShaderResources.Create(
+            CreateShaderResource(&input, sizeof(input)), useFlag);
+
+        const vx::DescriptorSet<UniformDescriptorSet> descriptorSet;
+        m_CommandBuffer.cmdPushDescriptorSetKHR(
+            vk::PipelineBindPoint::eGraphics, m_ColorMatrixPipelineLayout, 1,
+            {descriptorSet->uniform = vx::UniformBufferDescriptor(
+                 m_ShaderResources.Get(resource).m_Buffer)});
+    }
 
     m_GeometryResources.Get(~m_FullscreenQuadGeometry).Draw(m_CommandBuffer);
     m_CommandBuffer.cmdEndRendering();

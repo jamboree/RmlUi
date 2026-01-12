@@ -25,39 +25,33 @@ bool PhysicalDeviceInfo::HasExtension(std::string_view name) const noexcept {
     return it != m_ExtensionProperties.end() && it->getExtensionName() == name;
 }
 
+#define REQIRE_FEATURE(feature)                                                \
+    if (!supported.feature)                                                    \
+        return false;                                                          \
+    feature = true
+
 struct GfxContext_VX::DeviceFeatures
     : vx::StructureChain<
           vk::PhysicalDeviceFeatures2,
           vk::PhysicalDeviceTimelineSemaphoreFeatures,
           vk::PhysicalDeviceSynchronization2Features,
           vk::PhysicalDeviceDynamicRenderingFeatures,
+          vk::PhysicalDeviceDescriptorIndexingFeatures,
           vk::PhysicalDeviceExtendedDynamicState3FeaturesEXT,
           vk::PhysicalDeviceBufferDeviceAddressFeatures,
           vk::PhysicalDeviceUniformBufferStandardLayoutFeatures> {
     bool Init(vk::PhysicalDevice physicalDevice) {
         DeviceFeatures supported;
         physicalDevice.getFeatures2(&supported);
-        if (!supported.timelineSemaphore)
-            return false;
-        timelineSemaphore = true;
-        if (!supported.synchronization2)
-            return false;
-        synchronization2 = true;
-        if (!supported.dynamicRendering)
-            return false;
-        dynamicRendering = true;
-        if (!supported.extendedDynamicState3ColorBlendEnable)
-            return false;
-        extendedDynamicState3ColorBlendEnable = true;
-        if (!supported.extendedDynamicState3ColorBlendEquation)
-            return false;
-        extendedDynamicState3ColorBlendEquation = true;
-        if (!supported.bufferDeviceAddress)
-            return false;
-        bufferDeviceAddress = true;
-        if (!supported.uniformBufferStandardLayout)
-            return false;
-        uniformBufferStandardLayout = true;
+        REQIRE_FEATURE(timelineSemaphore);
+        REQIRE_FEATURE(synchronization2);
+        REQIRE_FEATURE(dynamicRendering);
+        REQIRE_FEATURE(extendedDynamicState3ColorBlendEnable);
+        REQIRE_FEATURE(extendedDynamicState3ColorBlendEquation);
+        REQIRE_FEATURE(bufferDeviceAddress);
+        REQIRE_FEATURE(descriptorBindingPartiallyBound);
+        REQIRE_FEATURE(descriptorBindingSampledImageUpdateAfterBind);
+        REQIRE_FEATURE(uniformBufferStandardLayout);
         return true;
     }
 };
