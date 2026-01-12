@@ -476,6 +476,9 @@ namespace vx {
         }
     };
 
+    template<class T>
+    concept HasImmutableSampler = requires { T::immutableSamplerIndex; };
+
     template<uint32_t Id, class T,
              vk::ShaderStageFlags Stages = vk::ShaderStageFlagBits::eAll,
              vk::DescriptorBindingFlags Flags = {}>
@@ -493,6 +496,10 @@ namespace vx {
             binding.setDescriptorType(Ty::descriptorType);
             binding.setStageFlags(Stages);
             binding.setDescriptorCount(Trait::getDescriptorCount(limits));
+            if constexpr (HasImmutableSampler<T>) {
+                binding.setImmutableSamplers(limits->immutableSamplers +
+                                             T::immutableSamplerIndex);
+            }
             return binding;
         }
 
@@ -747,14 +754,48 @@ namespace vx {
         }
     };
 
+    template<unsigned I>
+    struct ImmutableSamplerDescriptor : ImageDescriptorBase {
+        static constexpr auto descriptorType = vk::DescriptorType::eSampler;
+        static constexpr unsigned immutableSamplerIndex = I;
+
+        ImmutableSamplerDescriptor(vk::Sampler) noexcept {}
+
+        template<class Limits>
+        static constexpr uint32_t getMaxDescriptorCount(const Limits& limits) {
+            return limits.maxSamplers;
+        }
+    };
+
     struct CombinedImageSamplerDescriptor : ImageDescriptorBase {
         static constexpr auto descriptorType =
             vk::DescriptorType::eCombinedImageSampler;
 
-        CombinedImageSamplerDescriptor(vk::Sampler sampler,
-                                       vk::ImageView imageView,
-                                       vk::ImageLayout imageLayout) noexcept {
+        CombinedImageSamplerDescriptor(
+            vk::Sampler sampler, vk::ImageView imageView,
+            vk::ImageLayout imageLayout =
+                vk::ImageLayout::eShaderReadOnlyOptimal) noexcept {
             setSampler(sampler);
+            setImageView(imageView);
+            setImageLayout(imageLayout);
+        }
+
+        template<class Limits>
+        static constexpr uint32_t getMaxDescriptorCount(const Limits& limits) {
+            return limits.maxCombinedImageSamplers;
+        }
+    };
+
+    template<unsigned I>
+    struct CombinedImageImmutableSamplerDescriptor : ImageDescriptorBase {
+        static constexpr auto descriptorType =
+            vk::DescriptorType::eCombinedImageSampler;
+        static constexpr unsigned immutableSamplerIndex = I;
+
+        CombinedImageImmutableSamplerDescriptor(
+            vk::ImageView imageView,
+            vk::ImageLayout imageLayout =
+                vk::ImageLayout::eShaderReadOnlyOptimal) noexcept {
             setImageView(imageView);
             setImageLayout(imageLayout);
         }
@@ -777,7 +818,11 @@ namespace vx {
         static constexpr auto descriptorType =
             vk::DescriptorType::eSampledImage;
 
-        using ImageOnlyDescriptorBase::ImageOnlyDescriptorBase;
+        SampledImageDescriptor(
+            vk::ImageView imageView,
+            vk::ImageLayout imageLayout =
+                vk::ImageLayout::eShaderReadOnlyOptimal) noexcept
+            : ImageOnlyDescriptorBase(imageView, imageLayout) {}
 
         template<class Limits>
         static constexpr uint32_t getMaxDescriptorCount(const Limits& limits) {
@@ -789,7 +834,8 @@ namespace vx {
         static constexpr auto descriptorType =
             vk::DescriptorType::eStorageImage;
 
-        using ImageOnlyDescriptorBase::ImageOnlyDescriptorBase;
+        StorageImageDescriptor(vk::ImageView imageView) noexcept
+            : ImageOnlyDescriptorBase(imageView, vk::ImageLayout::eGeneral) {}
 
         template<class Limits>
         static constexpr uint32_t getMaxDescriptorCount(const Limits& limits) {
@@ -801,7 +847,11 @@ namespace vx {
         static constexpr auto descriptorType =
             vk::DescriptorType::eInputAttachment;
 
-        using ImageOnlyDescriptorBase::ImageOnlyDescriptorBase;
+        InputAttachmentDescriptor(
+            vk::ImageView imageView,
+            vk::ImageLayout imageLayout =
+                vk::ImageLayout::eAttachmentOptimal) noexcept
+            : ImageOnlyDescriptorBase(imageView, imageLayout) {}
 
         template<class Limits>
         static constexpr uint32_t getMaxDescriptorCount(const Limits& limits) {
@@ -940,7 +990,7 @@ namespace vx {
         }
 
         template<class Def, class Limits>
-        vk::Result createTypedDescriptorSetLayoutWithLimits(
+        vk::Result createTypedDescriptorSetLayoutWithContext(
             DescriptorSetLayout<Def>* out, const Limits& limits,
             vk::DescriptorSetLayoutCreateFlags flags = {}) const {
             using Trait = DescriptorSetLayoutTrait<EnumMembers<Def>>;

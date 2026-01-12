@@ -87,6 +87,10 @@ struct Renderer_VX : Rml::RenderInterface {
     /// texture to be rendered later with geometry.
     Rml::TextureHandle SaveLayerAsTexture() override;
 
+    /// Called by RmlUi when it wants to store the current layer as a mask
+    /// image, to be applied later as a filter.
+    Rml::CompiledFilterHandle SaveLayerAsMaskImage() override;
+
     /// Called by RmlUi when it wants to compile a new filter.
     Rml::CompiledFilterHandle
     CompileFilter(const Rml::String& name,
@@ -97,6 +101,7 @@ struct Renderer_VX : Rml::RenderInterface {
 private:
     struct TextureDescriptorSet;
     struct UniformDescriptorSet;
+    struct BlendMaskDescriptorSet;
     struct BlurDescriptorSet;
 
     struct GeometryResource;
@@ -255,9 +260,9 @@ private:
 
     void EndLayerRendering();
 
-    void BeginPostprocess(unsigned index);
+    vk::Image BeginPostprocess(unsigned index);
 
-    void PostprocessToSample(unsigned index, bool fromTransfer);
+    void TransitionToSample(vk::Image image, bool fromTransfer);
 
     void SetSample(unsigned index, vk::PipelineLayout pipelineLayout);
 
@@ -284,6 +289,8 @@ private:
 
     void RenderFilter(const ColorMatrixFilter& filter);
 
+    void RenderFilter(const MaskImageFilter& filter);
+
     void RenderBlur(float sigma, const unsigned (&postprocess)[2]);
 
     GfxContext_VX* m_Gfx = nullptr;
@@ -293,11 +300,14 @@ private:
     SurfaceManager m_SurfaceManager;
     vx::DescriptorSetLayout<TextureDescriptorSet> m_TextureDescriptorSetLayout;
     vx::DescriptorSetLayout<UniformDescriptorSet> m_UniformDescriptorSetLayout;
+    vx::DescriptorSetLayout<BlendMaskDescriptorSet>
+        m_BlendMaskDescriptorSetLayout;
     vx::DescriptorSetLayout<BlurDescriptorSet> m_BlurDescriptorSetLayout;
     vk::PipelineLayout m_BasicPipelineLayout;
     vk::PipelineLayout m_TexturePipelineLayout;
     vk::PipelineLayout m_GradientPipelineLayout;
     vk::PipelineLayout m_ColorMatrixPipelineLayout;
+    vk::PipelineLayout m_BlendMaskPipelineLayout;
     vk::PipelineLayout m_BlurPipelineLayout;
     vk::Pipeline m_ClipPipeline;
     vk::Pipeline m_ColorPipeline;
@@ -306,6 +316,7 @@ private:
     vk::Pipeline m_PassthroughPipeline;
     vk::Pipeline m_MsPassthroughPipeline;
     vk::Pipeline m_ColorMatrixPipeline;
+    vk::Pipeline m_BlendMaskPipeline;
     vk::Pipeline m_BlurPipeline;
     vk::Sampler m_Sampler;
     vx::CommandBuffer m_CommandBuffer;

@@ -181,7 +181,7 @@ struct Renderer_VX::TextureDescriptorSet {
     static constexpr vk::ShaderStageFlags Stages =
         vk::ShaderStageFlagBits::bFragment;
 
-    VX_BINDING(0, vx::CombinedImageSamplerDescriptor, Stages) tex;
+    VX_BINDING(0, vx::CombinedImageImmutableSamplerDescriptor<0>, Stages) tex;
 };
 
 struct Renderer_VX::UniformDescriptorSet {
@@ -191,11 +191,20 @@ struct Renderer_VX::UniformDescriptorSet {
     VX_BINDING(0, vx::UniformBufferDescriptor, Stages) uniform;
 };
 
+struct Renderer_VX::BlendMaskDescriptorSet {
+    static constexpr vk::ShaderStageFlags Stages =
+        vk::ShaderStageFlagBits::bFragment;
+
+    VX_BINDING(0, vx::ImmutableSamplerDescriptor<0>, Stages) mySampler;
+    VX_BINDING(1, vx::SampledImageDescriptor, Stages) tex;
+    VX_BINDING(2, vx::SampledImageDescriptor, Stages) texMask;
+};
+
 struct Renderer_VX::BlurDescriptorSet {
     static constexpr vk::ShaderStageFlags Stages =
         vk::ShaderStageFlagBits::bFragment;
 
-    VX_BINDING(0, vx::CombinedImageSamplerDescriptor, Stages) tex;
+    VX_BINDING(0, vx::CombinedImageImmutableSamplerDescriptor<0>, Stages) tex;
     VX_BINDING(1, vx::UniformBufferDescriptor, Stages) input;
 };
 
@@ -351,6 +360,9 @@ void Renderer_VX::Destroy() {
     if (m_ColorMatrixPipeline) {
         device.destroyPipeline(m_ColorMatrixPipeline);
     }
+    if (m_BlendMaskPipeline) {
+        device.destroyPipeline(m_BlendMaskPipeline);
+    }
     if (m_BlurPipeline) {
         device.destroyPipeline(m_BlurPipeline);
     }
@@ -366,6 +378,9 @@ void Renderer_VX::Destroy() {
     if (m_ColorMatrixPipelineLayout) {
         device.destroyPipelineLayout(m_ColorMatrixPipelineLayout);
     }
+    if (m_BlendMaskPipelineLayout) {
+        device.destroyPipelineLayout(m_BlendMaskPipelineLayout);
+    }
     if (m_BlurPipelineLayout) {
         device.destroyPipelineLayout(m_BlurPipelineLayout);
     }
@@ -374,6 +389,9 @@ void Renderer_VX::Destroy() {
     }
     if (m_UniformDescriptorSetLayout) {
         device.destroyDescriptorSetLayout(m_UniformDescriptorSetLayout);
+    }
+    if (m_BlendMaskDescriptorSetLayout) {
+        device.destroyDescriptorSetLayout(m_BlendMaskDescriptorSetLayout);
     }
     if (m_BlurDescriptorSetLayout) {
         device.destroyDescriptorSetLayout(m_BlurDescriptorSetLayout);
@@ -465,9 +483,7 @@ void Renderer_VX::RenderGeometry(Rml::CompiledGeometryHandle geometry,
         const vx::DescriptorSet<TextureDescriptorSet> descriptorSet;
         m_CommandBuffer.cmdPushDescriptorSetKHR(
             vk::PipelineBindPoint::eGraphics, pipelineLayout, 0,
-            {descriptorSet->tex = vx::CombinedImageSamplerDescriptor(
-                 m_Sampler, t.m_ImageView,
-                 vk::ImageLayout::eShaderReadOnlyOptimal)});
+            {descriptorSet->tex = t.m_ImageView});
     }
     m_CommandBuffer.cmdBindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
 
@@ -887,7 +903,7 @@ void Renderer_VX::EndLayerRendering() {
     }
 }
 
-void Renderer_VX::BeginPostprocess(unsigned index) {
+vk::Image Renderer_VX::BeginPostprocess(unsigned index) {
     const auto& colorImage = m_SurfaceManager.GetPostprocess(*m_Gfx, index);
     vx::ImageMemoryBarrierState colorImageBarrier;
 
@@ -920,11 +936,13 @@ void Renderer_VX::BeginPostprocess(unsigned index) {
     renderingInfo.setColorAttachments(&colorAttachmentInfo);
 
     m_CommandBuffer.cmdBeginRendering(renderingInfo);
+
+    return colorImage.m_Image;
 }
 
-void Renderer_VX::PostprocessToSample(unsigned index, bool fromTransfer) {
+void Renderer_VX::TransitionToSample(vk::Image image, bool fromTransfer) {
     vx::ImageMemoryBarrierState imageBarrier;
-    imageBarrier.init(m_SurfaceManager.GetPostprocess(*m_Gfx, index).m_Image,
+    imageBarrier.init(image,
                       vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
     if (fromTransfer) {
         imageBarrier.setOldLayout(vk::ImageLayout::eTransferDstOptimal);
@@ -947,10 +965,8 @@ void Renderer_VX::SetSample(unsigned index, vk::PipelineLayout pipelineLayout) {
     const vx::DescriptorSet<TextureDescriptorSet> descriptorSet;
     m_CommandBuffer.cmdPushDescriptorSetKHR(
         vk::PipelineBindPoint::eGraphics, pipelineLayout, 0,
-        {descriptorSet->tex = vx::CombinedImageSamplerDescriptor(
-             m_Sampler,
-             m_SurfaceManager.GetPostprocess(*m_Gfx, index).m_ImageView,
-             vk::ImageLayout::eShaderReadOnlyOptimal)});
+        {descriptorSet->tex =
+             m_SurfaceManager.GetPostprocess(*m_Gfx, index).m_ImageView});
 }
 
 void Renderer_VX::ResolveLayer(Rml::LayerHandle source, vk::Image dstImage) {
@@ -1048,9 +1064,11 @@ void Renderer_VX::CompositeLayers(
     // the multi-sampled framebuffer in any case.
     // @performance If we have BlendMode::Replace and no filters or mask then we
     // can just blit directly to the destination.
-    ResolveLayer(source, m_SurfaceManager.GetPostprocess(*m_Gfx, 0).m_Image);
+    const auto postprocessImage =
+        m_SurfaceManager.GetPostprocess(*m_Gfx, 0).m_Image;
+    ResolveLayer(source, postprocessImage);
 
-    PostprocessToSample(0, true);
+    TransitionToSample(postprocessImage, true);
 
     // Render the filters, the Postprocess(0) framebuffer is used for both
     // input and output.
@@ -1197,6 +1215,20 @@ inline Rml::CompiledFilterHandle CreateFilter(T&& filter) {
         new T(std::move(filter)));
 }
 
+Rml::CompiledFilterHandle Renderer_VX::SaveLayerAsMaskImage() {
+    EndLayerRendering();
+
+    const auto topLayer = m_SurfaceManager.GetTopLayerHandle();
+    const auto maskImage = m_SurfaceManager.GetPostprocess(*m_Gfx, 3).m_Image;
+    ResolveLayer(topLayer, maskImage);
+
+    TransitionToSample(maskImage, true);
+
+    BeginLayerRendering(topLayer);
+
+    return CreateFilter(MaskImageFilter());
+}
+
 Rml::CompiledFilterHandle
 Renderer_VX::CompileFilter(const Rml::String& name,
                            const Rml::Dictionary& parameters) {
@@ -1326,16 +1358,25 @@ void Renderer_VX::ReleaseFilter(Rml::CompiledFilterHandle filter) {
 void Renderer_VX::InitPipelineLayouts() {
     const auto device = m_Gfx->m_Device;
 
-    check(device.createTypedDescriptorSetLayout(
-        &m_TextureDescriptorSetLayout,
+    struct Context {
+        vk::Sampler immutableSamplers[1];
+    };
+    Context context{m_Sampler};
+
+    check(device.createTypedDescriptorSetLayoutWithContext(
+        &m_TextureDescriptorSetLayout, context,
         vk::DescriptorSetLayoutCreateFlagBits::bPushDescriptorKHR));
 
     check(device.createTypedDescriptorSetLayout(
         &m_UniformDescriptorSetLayout,
         vk::DescriptorSetLayoutCreateFlagBits::bPushDescriptorKHR));
 
-    check(device.createTypedDescriptorSetLayout(
-        &m_BlurDescriptorSetLayout,
+    check(device.createTypedDescriptorSetLayoutWithContext(
+        &m_BlendMaskDescriptorSetLayout, context,
+        vk::DescriptorSetLayoutCreateFlagBits::bPushDescriptorKHR));
+
+    check(device.createTypedDescriptorSetLayoutWithContext(
+        &m_BlurDescriptorSetLayout, context,
         vk::DescriptorSetLayoutCreateFlagBits::bPushDescriptorKHR));
 
     vk::PushConstantRange pushConstantRanges[2];
@@ -1373,9 +1414,14 @@ void Renderer_VX::InitPipelineLayouts() {
     m_ColorMatrixPipelineLayout =
         device.createPipelineLayout(pipelineLayoutInfo).get();
 
-    pipelineLayoutInfo.setSetLayouts(&m_BlurDescriptorSetLayout);
-
     pipelineLayoutInfo.setPushConstantRanges(&vertPushConstantRange);
+
+    pipelineLayoutInfo.setSetLayouts(&m_BlendMaskDescriptorSetLayout);
+
+    m_BlendMaskPipelineLayout =
+        device.createPipelineLayout(pipelineLayoutInfo).get();
+
+    pipelineLayoutInfo.setSetLayouts(&m_BlurDescriptorSetLayout);
 
     m_BlurPipelineLayout =
         device.createPipelineLayout(pipelineLayoutInfo).get();
@@ -1405,6 +1451,8 @@ void Renderer_VX::InitPipelines(
         device.createShaderModule(shader_frag_blur).get();
     const auto colorMatrixFragShader =
         device.createShaderModule(shader_frag_color_matrix).get();
+    const auto blendMaskFragShader =
+        device.createShaderModule(shader_frag_blend_mask).get();
 
     vx::GraphicsPipelineBuilder pipelineBuilder;
     pipelineBuilder.attach(renderingInfo);
@@ -1531,6 +1579,11 @@ void Renderer_VX::InitPipelines(
 
     m_ColorMatrixPipeline = pipelineBuilder.build(device).get();
 
+    pipelineBuilder.setLayout(m_BlendMaskPipelineLayout);
+    shaderStageInfos[1].setModule(blendMaskFragShader);
+
+    m_BlendMaskPipeline = pipelineBuilder.build(device).get();
+
     pipelineBuilder.setLayout(m_BlurPipelineLayout);
     shaderStageInfos[0].setModule(blurVertShader);
     shaderStageInfos[1].setModule(blurFragShader);
@@ -1547,6 +1600,7 @@ void Renderer_VX::InitPipelines(
     device.destroyShaderModule(passthroughFragShader);
     device.destroyShaderModule(blurFragShader);
     device.destroyShaderModule(colorMatrixFragShader);
+    device.destroyShaderModule(blendMaskFragShader);
 }
 
 Rml::TextureHandle Renderer_VX::CreateTexture(vk::Buffer buffer,
@@ -1672,7 +1726,7 @@ void Renderer_VX::RenderFilters(
 }
 
 void Renderer_VX::RenderFilter(const PassthroughFilter& filter) {
-    BeginPostprocess(1);
+    const auto postprocesImage = BeginPostprocess(1);
     SetSample(0, m_TexturePipelineLayout);
 
     m_CommandBuffer.cmdBindPipeline(vk::PipelineBindPoint::eGraphics,
@@ -1690,7 +1744,7 @@ void Renderer_VX::RenderFilter(const PassthroughFilter& filter) {
 
     m_GeometryResources.Get(~m_FullscreenQuadGeometry).Draw(m_CommandBuffer);
     m_CommandBuffer.cmdEndRendering();
-    PostprocessToSample(1, false);
+    TransitionToSample(postprocesImage, false);
     m_SurfaceManager.SwapPostprocessPrimarySecondary();
 }
 
@@ -1699,7 +1753,7 @@ void Renderer_VX::RenderFilter(const BlurFilter& filter) {
 }
 
 void Renderer_VX::RenderFilter(const ColorMatrixFilter& filter) {
-    BeginPostprocess(1);
+    const auto postprocesImage = BeginPostprocess(1);
     SetSample(0, m_ColorMatrixPipelineLayout);
 
     m_CommandBuffer.cmdBindPipeline(vk::PipelineBindPoint::eGraphics,
@@ -1711,7 +1765,29 @@ void Renderer_VX::RenderFilter(const ColorMatrixFilter& filter) {
 
     m_GeometryResources.Get(~m_FullscreenQuadGeometry).Draw(m_CommandBuffer);
     m_CommandBuffer.cmdEndRendering();
-    PostprocessToSample(1, false);
+    TransitionToSample(postprocesImage, false);
+    m_SurfaceManager.SwapPostprocessPrimarySecondary();
+}
+
+void Renderer_VX::RenderFilter(const MaskImageFilter&) {
+    const auto postprocesImage = BeginPostprocess(1);
+
+    m_CommandBuffer.cmdBindPipeline(vk::PipelineBindPoint::eGraphics,
+                                    m_BlendMaskPipeline);
+    {
+        const vx::DescriptorSet<BlendMaskDescriptorSet> descriptorSet;
+        m_CommandBuffer.cmdPushDescriptorSetKHR(
+            vk::PipelineBindPoint::eGraphics, m_BlendMaskPipelineLayout, 0,
+            {descriptorSet->mySampler = vk::Sampler(), // immutable
+             descriptorSet->tex =
+                 m_SurfaceManager.GetPostprocess(*m_Gfx, 0).m_ImageView,
+             descriptorSet->texMask =
+                 m_SurfaceManager.GetPostprocess(*m_Gfx, 3).m_ImageView});
+    }
+
+    m_GeometryResources.Get(~m_FullscreenQuadGeometry).Draw(m_CommandBuffer);
+    m_CommandBuffer.cmdEndRendering();
+    TransitionToSample(postprocesImage, false);
     m_SurfaceManager.SwapPostprocessPrimarySecondary();
 }
 
@@ -1754,12 +1830,12 @@ void Renderer_VX::RenderBlur(float sigma, const unsigned (&postprocess)[2]) {
         scissor.extent.width /= 2;
         scissor.extent.height /= 2;
         const auto j = i & 1;
-        BeginPostprocess(postprocess[j ^ 1]);
+        const auto postprocesImage = BeginPostprocess(postprocess[j ^ 1]);
         SetSample(postprocess[j], m_TexturePipelineLayout);
         m_CommandBuffer.cmdSetScissor(0, 1, &scissor);
         m_GeometryResources.Get(~quadGeometry).Draw(m_CommandBuffer);
         m_CommandBuffer.cmdEndRendering();
-        PostprocessToSample(postprocess[j ^ 1], false);
+        TransitionToSample(postprocesImage, false);
     }
 
     SetViewport(m_CommandBuffer, extent.width, extent.height);
@@ -1767,12 +1843,12 @@ void Renderer_VX::RenderBlur(float sigma, const unsigned (&postprocess)[2]) {
     // Ensure texture data end up in the temp buffer. Depending on the last
     // downscaling, we might need to move it from the source_destination buffer.
     if ((pass_level & 1) == 0) {
-        BeginPostprocess(postprocess[1]);
+        const auto postprocesImage = BeginPostprocess(postprocess[1]);
         SetSample(postprocess[0], m_TexturePipelineLayout);
         m_GeometryResources.Get(~m_FullscreenQuadGeometry)
             .Draw(m_CommandBuffer);
         m_CommandBuffer.cmdEndRendering();
-        PostprocessToSample(postprocess[1], false);
+        TransitionToSample(postprocesImage, false);
     }
 
     m_CommandBuffer.cmdBindPipeline(vk::PipelineBindPoint::eGraphics,
@@ -1795,7 +1871,7 @@ void Renderer_VX::RenderBlur(float sigma, const unsigned (&postprocess)[2]) {
     }
 
     // Blur render pass - vertical.
-    BeginPostprocess(postprocess[0]);
+    const auto postprocesImage0 = BeginPostprocess(postprocess[0]);
     SetSample(postprocess[1], m_BlurPipelineLayout);
 
     m_CommandBuffer.cmdPushConstant(
@@ -1803,10 +1879,10 @@ void Renderer_VX::RenderBlur(float sigma, const unsigned (&postprocess)[2]) {
         VX_FIELD(BlurVsInput, texelOffset) = {0.f, 1.f / extent.height});
     m_GeometryResources.Get(~m_FullscreenQuadGeometry).Draw(m_CommandBuffer);
     m_CommandBuffer.cmdEndRendering();
-    PostprocessToSample(postprocess[0], false);
+    TransitionToSample(postprocesImage0, false);
 
     // Blur render pass - horizontal.
-    BeginPostprocess(postprocess[1]);
+    const auto postprocesImage1 = BeginPostprocess(postprocess[1]);
     SetSample(postprocess[0], m_BlurPipelineLayout);
 
     m_CommandBuffer.cmdPushConstant(
@@ -1821,9 +1897,8 @@ void Renderer_VX::RenderBlur(float sigma, const unsigned (&postprocess)[2]) {
     vx::ImageMemoryBarrierState imageBarriers[2];
     auto& [srcImageBarrier, dstImageBarrier] = imageBarriers;
 
-    srcImageBarrier.init(
-        m_SurfaceManager.GetPostprocess(*m_Gfx, postprocess[1]).m_Image,
-        vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
+    srcImageBarrier.init(postprocesImage1,
+                         vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
     srcImageBarrier.setOldLayout(vk::ImageLayout::eAttachmentOptimal);
     srcImageBarrier.setSrcStageAccess(
         vk::PipelineStageFlagBits2::bColorAttachmentOutput,
@@ -1832,9 +1907,8 @@ void Renderer_VX::RenderBlur(float sigma, const unsigned (&postprocess)[2]) {
     srcImageBarrier.setDstStageAccess(vk::PipelineStageFlagBits2::bTransfer,
                                       vk::AccessFlagBits2::bTransferRead);
 
-    dstImageBarrier.init(
-        m_SurfaceManager.GetPostprocess(*m_Gfx, postprocess[0]).m_Image,
-        vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
+    dstImageBarrier.init(postprocesImage0,
+                         vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
     dstImageBarrier.setNewLayout(vk::ImageLayout::eTransferDstOptimal);
     dstImageBarrier.setDstStageAccess(vk::PipelineStageFlagBits2::bTransfer,
                                       vk::AccessFlagBits2::bTransferWrite);
@@ -1875,5 +1949,5 @@ void Renderer_VX::RenderBlur(float sigma, const unsigned (&postprocess)[2]) {
             vk::Filter::eLinear);
     }
 
-    PostprocessToSample(0, true);
+    TransitionToSample(postprocesImage0, true);
 }
