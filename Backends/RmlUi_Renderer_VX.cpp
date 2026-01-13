@@ -321,9 +321,9 @@ bool Renderer_VX::Init(GfxContext_VX& gfx) {
         vk::DescriptorPoolCreateFlagBits::bUpdateAfterBind);
     descriptorPoolInfo.setMaxSets(GfxContext_VX::InFlightCount);
     const vk::DescriptorPoolSize poolSizes[] = {
-        {vk::DescriptorType::eSampler, 1},
-        {vk::DescriptorType::eStorageBuffer, 1},
-        {vk::DescriptorType::eSampledImage, 4}};
+        {vk::DescriptorType::eSampler, 1 * GfxContext_VX::InFlightCount},
+        {vk::DescriptorType::eStorageBuffer, 1 * GfxContext_VX::InFlightCount},
+        {vk::DescriptorType::eSampledImage, 4 * GfxContext_VX::InFlightCount}};
     descriptorPoolInfo.setPoolSizeCount(std::size(poolSizes));
     descriptorPoolInfo.setPoolSizes(poolSizes);
     m_DescriptorPool = device.createDescriptorPool(descriptorPoolInfo).get();
@@ -336,11 +336,6 @@ bool Renderer_VX::Init(GfxContext_VX& gfx) {
                 .allocateTypedDescriptorSet<PrimaryDescriptorSet>(
                     m_DescriptorPool, m_PrimaryDescriptorSetLayout)
                 .get();
-#if 0
-        frameResource.m_PrimaryDescriptorSet.updateDescriptorSets({
-            descriptorSet->mySampler = vk::Sampler(), // immutable
-        });
-#endif // 0
     }
 
     vk::PipelineRenderingCreateInfo renderingInfo;
@@ -500,11 +495,6 @@ void Renderer_VX::EndFrame() {
     m_Gfx->m_Device.updateDescriptorSets(
         {frameResource.m_PrimaryDescriptorSet->matrices =
              frameResource.m_StorageBuffer.m_Buffer});
-}
-
-void Renderer_VX::ResetRenderTarget() {
-    m_SurfaceManager.Destroy(*m_Gfx);
-    m_SurfaceManager.Invalidate();
 }
 
 void Renderer_VX::ReleaseFrame(unsigned frameNumber) {

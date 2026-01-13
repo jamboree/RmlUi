@@ -12,8 +12,12 @@ struct Renderer_VX : Rml::RenderInterface {
 
     void BeginFrame(vx::CommandBuffer commandBuffer);
     void EndFrame();
-    void ResetRenderTarget();
     void ReleaseFrame(unsigned frameNumber);
+
+    void ResetRenderTarget() {
+        m_SurfaceManager.Destroy(*m_Gfx);
+        m_SurfaceManager.Invalidate();
+    }
 
     /// Called by RmlUi when it wants to compile geometry to be rendered later.
     Rml::CompiledGeometryHandle
