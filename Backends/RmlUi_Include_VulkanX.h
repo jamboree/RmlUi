@@ -697,6 +697,12 @@ namespace vx {
     };
 
     struct BufferDescriptorBase : vk::DescriptorBufferInfo {
+        BufferDescriptorBase(vk::Buffer buffer,
+                             vk::DeviceSize range = VK_WHOLE_SIZE) noexcept {
+            setBuffer(buffer);
+            setRange(range);
+        }
+
         BufferDescriptorBase(const BufferOffset& buffer,
                              vk::DeviceSize range = VK_WHOLE_SIZE) noexcept {
             setBuffer(buffer.m_buffer);
@@ -963,7 +969,7 @@ namespace vx {
         using vk::Device::setDebugUtilsObjectNameEXT;
 
         vk::Result setDebugUtilsObjectNameEXT(vk::Object object,
-                                              const char* name) {
+                                              const char* name) const {
             vk::DebugUtilsObjectNameInfoEXT objectNameInfo;
             objectNameInfo.setObject(object);
             objectNameInfo.setObjectName(name);

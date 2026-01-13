@@ -1,11 +1,7 @@
 #version 460
 #extension GL_GOOGLE_include_directive : require
 
-#include "BindlessTextures.h"
-
-layout(set = 1, binding = 0) uniform FsInput {
-    mat4 colorMatrix;
-};
+#include "BindlessTextures.glsl"
 
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 0) out vec4 finalColor;
@@ -18,6 +14,6 @@ void main() {
 	// transformations, we can do it directly in premultiplied space to avoid the extra division and multiplication
 	// steps. In this space, the constant term needs to be multiplied by the alpha value, instead of unity.
 	vec4 texColor = texture(sampler2D(textures[texIdx], mySampler), fragTexCoord);
-	vec3 transformedColor = vec3(colorMatrix * texColor);
+	vec3 transformedColor = vec3(matrices[colorMatrixIdx] * texColor);
 	finalColor = vec4(transformedColor, texColor.a);
 }

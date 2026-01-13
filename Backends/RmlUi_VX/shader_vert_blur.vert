@@ -4,7 +4,6 @@
 #include "BlurDefines.h"
 
 layout(push_constant) uniform VsInput {
-	mat4 _pad;
 	vec2 texelOffset;
 };
 

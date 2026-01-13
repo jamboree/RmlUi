@@ -95,16 +95,28 @@ struct QuadMesh {
 };
 
 struct VsInput {
-    Rml::Matrix4f transform;
+    // Rml::Matrix4f transform;
     Rml::Vector2f translate;
+    unsigned transformIdx;
+
+    static void SetRange(vk::PushConstantRange& range) {
+        range.setOffset(0);
+        range.setSize(sizeof(VsInput));
+    }
 };
 
-struct ColorMatrixFsInput {
-    Rml::Matrix4f colorMatrix;
+struct FsInput {
+    uint8_t _pad[16];
+    unsigned texIdx;
+    unsigned colorMatrixIdx;
+
+    static void SetRange(vk::PushConstantRange& range) {
+        range.setOffset(sizeof(_pad));
+        range.setSize(sizeof(FsInput) - sizeof(_pad));
+    }
 };
 
 struct BlurVsInput {
-    Rml::Matrix4f _pad;
     Rml::Vector2f texelOffset;
 };
 
@@ -149,11 +161,14 @@ struct BlurFsInput {
     }
 };
 
-struct Renderer_VX::GeometryResource {
-    uint32_t m_VertexCount;
-    uint32_t m_IndexCount;
+struct Renderer_VX::BufferResource {
     vk::Buffer m_Buffer;
     vma::Allocation m_Allocation;
+};
+
+struct Renderer_VX::GeometryResource : BufferResource {
+    uint32_t m_VertexCount;
+    uint32_t m_IndexCount;
 
     void Draw(vx::CommandBuffer commandBuffer) const {
         const vk::DeviceSize offset = 0;
@@ -171,42 +186,46 @@ struct Renderer_VX::TextureResource {
     vma::Allocation m_Allocation;
 };
 
-struct Renderer_VX::ShaderResource {
-    vk::Buffer m_Buffer;
-    vma::Allocation m_Allocation;
+struct Renderer_VX::ShaderResource : BufferResource {};
+
+struct Renderer_VX::FrameResource {
+    vx::DescriptorSet<PrimaryDescriptorSet> m_PrimaryDescriptorSet; // not own
+    BufferResource m_StorageBuffer;
+};
+
+struct Renderer_VX::PrimaryDescriptorSet {
+    static constexpr auto Vert = vk::ShaderStageFlagBits::bVertex;
+    static constexpr auto Frag = vk::ShaderStageFlagBits::bFragment;
+    static constexpr auto UpdateAfterBind =
+        vk::DescriptorBindingFlagBits::bUpdateAfterBind;
+    static constexpr auto PartiallyBound =
+        vk::DescriptorBindingFlagBits::bPartiallyBound;
+
+    VX_BINDING(0, vx::StorageBufferDescriptor, Vert | Frag, UpdateAfterBind)
+    matrices;
+    VX_BINDING(1, vx::ImmutableSamplerDescriptor<0>, Frag) mySampler;
+    VX_BINDING(2, vx::SampledImageDescriptor[4], Frag,
+               UpdateAfterBind | PartiallyBound)
+    textures;
 };
 
 struct Renderer_VX::TextureDescriptorSet {
-    static constexpr vk::ShaderStageFlags Stages =
-        vk::ShaderStageFlagBits::bFragment;
+    static constexpr auto Frag = vk::ShaderStageFlagBits::bFragment;
 
-    VX_BINDING(0, vx::CombinedImageImmutableSamplerDescriptor<0>, Stages) tex;
+    VX_BINDING(0, vx::CombinedImageImmutableSamplerDescriptor<0>, Frag) tex;
 };
 
 struct Renderer_VX::UniformDescriptorSet {
-    static constexpr vk::ShaderStageFlags Stages =
-        vk::ShaderStageFlagBits::bFragment;
+    static constexpr auto Frag = vk::ShaderStageFlagBits::bFragment;
 
-    VX_BINDING(0, vx::UniformBufferDescriptor, Stages) uniform;
+    VX_BINDING(0, vx::UniformBufferDescriptor, Frag) uniform;
 };
 
 struct Renderer_VX::BlurDescriptorSet {
-    static constexpr vk::ShaderStageFlags Stages =
-        vk::ShaderStageFlagBits::bFragment;
+    static constexpr auto Frag = vk::ShaderStageFlagBits::bFragment;
 
-    VX_BINDING(0, vx::CombinedImageImmutableSamplerDescriptor<0>, Stages) tex;
-    VX_BINDING(1, vx::UniformBufferDescriptor, Stages) input;
-};
-
-struct Renderer_VX::FilterDescriptorSet {
-    static constexpr vk::ShaderStageFlags Stages =
-        vk::ShaderStageFlagBits::bFragment;
-    static constexpr auto BindingFlags =
-        vk::DescriptorBindingFlagBits::bUpdateAfterBind |
-        vk::DescriptorBindingFlagBits::bPartiallyBound;
-
-    VX_BINDING(0, vx::ImmutableSamplerDescriptor<0>, Stages) mySampler;
-    VX_BINDING(1, vx::SampledImageDescriptor[4], Stages, BindingFlags) textures;
+    VX_BINDING(0, vx::CombinedImageImmutableSamplerDescriptor<0>, Frag) tex;
+    VX_BINDING(1, vx::UniformBufferDescriptor, Frag) input;
 };
 
 struct Renderer_VX::LayerState {
@@ -300,24 +319,29 @@ bool Renderer_VX::Init(GfxContext_VX& gfx) {
     vk::DescriptorPoolCreateInfo descriptorPoolInfo;
     descriptorPoolInfo.setFlags(
         vk::DescriptorPoolCreateFlagBits::bUpdateAfterBind);
-    descriptorPoolInfo.setMaxSets(1);
+    descriptorPoolInfo.setMaxSets(GfxContext_VX::InFlightCount);
     const vk::DescriptorPoolSize poolSizes[] = {
         {vk::DescriptorType::eSampler, 1},
+        {vk::DescriptorType::eStorageBuffer, 1},
         {vk::DescriptorType::eSampledImage, 4}};
     descriptorPoolInfo.setPoolSizeCount(std::size(poolSizes));
     descriptorPoolInfo.setPoolSizes(poolSizes);
     m_DescriptorPool = device.createDescriptorPool(descriptorPoolInfo).get();
 
-    m_FilterDescriptorSet =
-        device
-            .allocateTypedDescriptorSet<FilterDescriptorSet>(
-                m_DescriptorPool, m_FilterDescriptorSetLayout)
-            .get();
+    m_FrameResources.reset(new FrameResource[GfxContext_VX::InFlightCount]);
+    for (auto& frameResource :
+         std::span(m_FrameResources.get(), GfxContext_VX::InFlightCount)) {
+        frameResource.m_PrimaryDescriptorSet =
+            device
+                .allocateTypedDescriptorSet<PrimaryDescriptorSet>(
+                    m_DescriptorPool, m_PrimaryDescriptorSetLayout)
+                .get();
 #if 0
-    device.updateDescriptorSets({
-m_FilterDescriptorSet->mySampler = vk::Sampler(), // immutable
+        frameResource.m_PrimaryDescriptorSet.updateDescriptorSets({
+            descriptorSet->mySampler = vk::Sampler(), // immutable
         });
 #endif // 0
+    }
 
     vk::PipelineRenderingCreateInfo renderingInfo;
     renderingInfo.setColorAttachmentCount(1);
@@ -337,6 +361,12 @@ m_FilterDescriptorSet->mySampler = vk::Sampler(), // immutable
 void Renderer_VX::Destroy() {
     const auto device = m_Gfx->m_Device;
 
+    ReleaseAllResourceUse((2u << GfxContext_VX::InFlightCount) - 2u);
+    for (auto& frameResource :
+         std::span(m_FrameResources.get(), GfxContext_VX::InFlightCount)) {
+        ReleaseFrameResource(frameResource);
+    }
+
     m_SurfaceManager.Destroy(*m_Gfx);
     if (m_FullscreenQuadGeometry) {
         ReleaseGeometry(m_FullscreenQuadGeometry);
@@ -344,6 +374,9 @@ void Renderer_VX::Destroy() {
 
     if (m_Sampler) {
         device.destroySampler(m_Sampler);
+    }
+    if (m_DescriptorPool) {
+        device.destroyDescriptorPool(m_DescriptorPool);
     }
     if (m_ClipPipeline) {
         device.destroyPipeline(m_ClipPipeline);
@@ -372,17 +405,14 @@ void Renderer_VX::Destroy() {
     if (m_BlurPipeline) {
         device.destroyPipeline(m_BlurPipeline);
     }
-    if (m_BasicPipelineLayout) {
-        device.destroyPipelineLayout(m_BasicPipelineLayout);
+    if (m_PrimaryPipelineLayout) {
+        device.destroyPipelineLayout(m_PrimaryPipelineLayout);
     }
     if (m_GradientPipelineLayout) {
         device.destroyPipelineLayout(m_GradientPipelineLayout);
     }
     if (m_TexturePipelineLayout) {
         device.destroyPipelineLayout(m_TexturePipelineLayout);
-    }
-    if (m_FilterPipelineLayout) {
-        device.destroyPipelineLayout(m_FilterPipelineLayout);
     }
     if (m_BlurPipelineLayout) {
         device.destroyPipelineLayout(m_BlurPipelineLayout);
@@ -396,8 +426,8 @@ void Renderer_VX::Destroy() {
     if (m_BlurDescriptorSetLayout) {
         device.destroyDescriptorSetLayout(m_BlurDescriptorSetLayout);
     }
-    if (m_FilterDescriptorSetLayout) {
-        device.destroyDescriptorSetLayout(m_FilterDescriptorSetLayout);
+    if (m_PrimaryDescriptorSetLayout) {
+        device.destroyDescriptorSetLayout(m_PrimaryDescriptorSetLayout);
     }
 }
 
@@ -419,6 +449,7 @@ static Rml::Matrix4f Project(vk::Extent2D extent,
 
 void Renderer_VX::BeginFrame(vx::CommandBuffer commandBuffer) {
     m_CommandBuffer = commandBuffer;
+    m_Matrices.clear();
     m_StencilRef = 1;
     m_PostprocessPrimaryIndex = 0;
     m_EnableScissor = false;
@@ -427,6 +458,7 @@ void Renderer_VX::BeginFrame(vx::CommandBuffer commandBuffer) {
     m_DepthStencilInitialized = false;
 
     const auto extent = m_Gfx->m_FrameExtent;
+    const auto& frameResource = m_FrameResources[m_Gfx->m_FrameNumber];
 
     SetViewport(m_CommandBuffer, extent.width, extent.height);
 
@@ -435,16 +467,16 @@ void Renderer_VX::BeginFrame(vx::CommandBuffer commandBuffer) {
     m_CommandBuffer.cmdSetScissor(0, 1, &m_Scissor);
 
     const auto transform = Project(extent, Rml::Matrix4f::Identity());
-    m_CommandBuffer.cmdPushConstant(m_BasicPipelineLayout,
-                                    vk::ShaderStageFlagBits::bVertex,
-                                    VX_FIELD(VsInput, transform) = transform);
+    m_CommandBuffer.cmdPushConstant(
+        m_PrimaryPipelineLayout, vk::ShaderStageFlagBits::bVertex,
+        VX_FIELD(VsInput, transformIdx) = CreateMatrix(transform));
     m_CommandBuffer.cmdSetStencilTestEnable(m_EnableClipMask);
     m_CommandBuffer.cmdSetStencilReference(
         vk::StencilFaceFlagBits::eFrontAndBack, m_StencilRef);
 
-    m_CommandBuffer.cmdBindDescriptorSets(vk::PipelineBindPoint::eGraphics,
-                                          m_FilterPipelineLayout, 0, 1,
-                                          &m_FilterDescriptorSet);
+    m_CommandBuffer.cmdBindDescriptorSets(
+        vk::PipelineBindPoint::eGraphics, m_PrimaryPipelineLayout, 0, 1,
+        &frameResource.m_PrimaryDescriptorSet);
 
     const auto topLayer = m_SurfaceManager.PushLayer(*m_Gfx);
     BeginLayerRendering(topLayer);
@@ -452,9 +484,22 @@ void Renderer_VX::BeginFrame(vx::CommandBuffer commandBuffer) {
 
 void Renderer_VX::EndFrame() {
     RMLUI_ASSERT(m_SurfaceManager.GetTopLayerHandle() == 0);
+    const uint8_t useFlag = 2u << m_Gfx->m_FrameNumber;
+    auto& frameResource = m_FrameResources[m_Gfx->m_FrameNumber];
+
     EndLayerRendering();
     ResolveLayer(0, m_Gfx->CurrentFrameResource().m_Image);
     m_SurfaceManager.PopLayer();
+
+    const auto size = m_Matrices.size() * sizeof(Rml::Matrix4f);
+    vma::AllocationInfo allocInfo;
+    frameResource.m_StorageBuffer = CreateBufferResource(
+        size, vk::BufferUsageFlagBits::bStorageBuffer, &allocInfo);
+    std::memcpy(allocInfo.getMappedData(), m_Matrices.data(), size);
+
+    m_Gfx->m_Device.updateDescriptorSets(
+        {frameResource.m_PrimaryDescriptorSet->matrices =
+             frameResource.m_StorageBuffer.m_Buffer});
 }
 
 void Renderer_VX::ResetRenderTarget() {
@@ -462,10 +507,9 @@ void Renderer_VX::ResetRenderTarget() {
     m_SurfaceManager.Invalidate();
 }
 
-void Renderer_VX::ReleaseAllResourceUse(uint8_t useFlags) {
-    m_GeometryResources.ReleaseAllUse(*this, useFlags);
-    m_TextureResources.ReleaseAllUse(*this, useFlags);
-    m_ShaderResources.ReleaseAllUse(*this, useFlags);
+void Renderer_VX::ReleaseFrame(unsigned frameNumber) {
+    ReleaseAllResourceUse(2u << frameNumber);
+    ReleaseFrameResource(m_FrameResources[frameNumber]);
 }
 
 Rml::CompiledGeometryHandle
@@ -480,7 +524,7 @@ void Renderer_VX::RenderGeometry(Rml::CompiledGeometryHandle geometry,
     const uint8_t useFlag = 2u << m_Gfx->m_FrameNumber;
     const auto& g = m_GeometryResources.Use(~geometry, useFlag);
     auto pipeline = m_ColorPipeline;
-    auto pipelineLayout = m_BasicPipelineLayout;
+    auto pipelineLayout = m_PrimaryPipelineLayout;
 
     ActivateLayerRendering();
 
@@ -501,9 +545,15 @@ void Renderer_VX::RenderGeometry(Rml::CompiledGeometryHandle geometry,
     g.Draw(m_CommandBuffer);
 }
 
-void Renderer_VX::DestroyResource(GeometryResource& g) {
+void Renderer_VX::ReleaseAllResourceUse(uint8_t useFlags) {
+    m_GeometryResources.ReleaseAllUse(*this, useFlags);
+    m_TextureResources.ReleaseAllUse(*this, useFlags);
+    m_ShaderResources.ReleaseAllUse(*this, useFlags);
+}
+
+void Renderer_VX::DestroyResource(BufferResource& b) {
     const auto allocator = m_Gfx->m_Allocator;
-    allocator.destroyBuffer(g.m_Buffer, g.m_Allocation);
+    allocator.destroyBuffer(b.m_Buffer, b.m_Allocation);
 }
 
 void Renderer_VX::ReleaseGeometry(Rml::CompiledGeometryHandle geometry) {
@@ -645,12 +695,11 @@ void Renderer_VX::SetScissorRegion(Rml::Rectanglei region) {
 }
 
 void Renderer_VX::SetTransform(const Rml::Matrix4f* transform) {
-    const auto extent = m_Gfx->m_FrameExtent;
-    const auto matrix =
-        Project(extent, transform ? *transform : Rml::Matrix4f::Identity());
-    m_CommandBuffer.cmdPushConstant(m_BasicPipelineLayout,
-                                    vk::ShaderStageFlagBits::bVertex,
-                                    VX_FIELD(VsInput, transform) = matrix);
+    const auto transformIdx =
+        transform ? CreateMatrix(Project(m_Gfx->m_FrameExtent, *transform)) : 0;
+    m_CommandBuffer.cmdPushConstant(
+        m_PrimaryPipelineLayout, vk::ShaderStageFlagBits::bVertex,
+        VX_FIELD(VsInput, transformIdx) = transformIdx);
 }
 
 void Renderer_VX::EnableClipMask(bool enable) {
@@ -700,7 +749,7 @@ void Renderer_VX::RenderToClipMask(Rml::ClipMaskOperation operation,
 
     m_CommandBuffer.cmdBindPipeline(vk::PipelineBindPoint::eGraphics,
                                     m_ClipPipeline);
-    m_CommandBuffer.cmdPushConstant(m_BasicPipelineLayout,
+    m_CommandBuffer.cmdPushConstant(m_PrimaryPipelineLayout,
                                     vk::ShaderStageFlagBits::bVertex,
                                     VX_FIELD(VsInput, translate) = translation);
     m_CommandBuffer.cmdSetStencilOp(
@@ -786,8 +835,12 @@ Renderer_VX::CompileShader(const Rml::String& name,
         uniform.func |= GradientUniform::REPEATING;
     uniform.ApplyColorStopList(parameters);
 
-    return ~m_ShaderResources.Create(
-        CreateShaderResource(&uniform, uniform.GetUsedSize()));
+    const auto size = uniform.GetUsedSize();
+    vma::AllocationInfo allocInfo;
+    ShaderResource s{CreateBufferResource(
+        size, vk::BufferUsageFlagBits::bUniformBuffer, &allocInfo)};
+    std::memcpy(allocInfo.getMappedData(), &uniform, size);
+    return ~m_ShaderResources.Create(s);
 }
 
 void Renderer_VX::RenderShader(Rml::CompiledShaderHandle shader,
@@ -803,7 +856,7 @@ void Renderer_VX::RenderShader(Rml::CompiledShaderHandle shader,
     const vx::DescriptorSet<UniformDescriptorSet> descriptorSet;
     m_CommandBuffer.cmdPushDescriptorSetKHR(
         vk::PipelineBindPoint::eGraphics, m_GradientPipelineLayout, 1,
-        {descriptorSet->uniform = vx::UniformBufferDescriptor(s.m_Buffer)});
+        {descriptorSet->uniform = s.m_Buffer});
     m_CommandBuffer.cmdBindPipeline(vk::PipelineBindPoint::eGraphics,
                                     m_GradientPipeline);
 
@@ -811,11 +864,6 @@ void Renderer_VX::RenderShader(Rml::CompiledShaderHandle shader,
                                     vk::ShaderStageFlagBits::bVertex,
                                     VX_FIELD(VsInput, translate) = translation);
     g.Draw(m_CommandBuffer);
-}
-
-void Renderer_VX::DestroyResource(ShaderResource& s) {
-    const auto allocator = m_Gfx->m_Allocator;
-    allocator.destroyBuffer(s.m_Buffer, s.m_Allocation);
 }
 
 void Renderer_VX::BeginLayerRendering(Rml::LayerHandle handle) {
@@ -922,8 +970,10 @@ const ImageAttachment& Renderer_VX::GetPostprocess(unsigned index) {
                 vk::ImageUsageFlagBits::bTransferSrc |
                 vk::ImageUsageFlagBits::bTransferDst,
             vk::ImageAspectFlagBits::bColor, vk::SampleCountFlagBits::b1);
+        const auto& frameResource = m_FrameResources[m_Gfx->m_FrameNumber];
         m_Gfx->m_Device.updateDescriptorSets(
-            {m_FilterDescriptorSet->textures[index] = fb.m_ImageView});
+            {frameResource.m_PrimaryDescriptorSet->textures[index] =
+                 fb.m_ImageView});
     }
     return fb;
 }
@@ -986,15 +1036,10 @@ void Renderer_VX::TransitionToSample(vk::Image image, bool fromTransfer) {
     m_CommandBuffer.cmdPipelineBarriers(imageBarrier);
 }
 
-struct TexInput {
-    uint8_t _pad[72];
-    unsigned texIdx;
-};
-
 void Renderer_VX::SetSample(unsigned index) {
-    m_CommandBuffer.cmdPushConstant(m_FilterPipelineLayout,
+    m_CommandBuffer.cmdPushConstant(m_PrimaryPipelineLayout,
                                     vk::ShaderStageFlagBits::bFragment,
-                                    VX_FIELD(TexInput, texIdx) = index);
+                                    VX_FIELD(FsInput, texIdx) = index);
 }
 
 void Renderer_VX::ResolveLayer(Rml::LayerHandle source, vk::Image dstImage) {
@@ -1404,32 +1449,31 @@ void Renderer_VX::InitPipelineLayouts() {
         vk::DescriptorSetLayoutCreateFlagBits::bPushDescriptorKHR));
 
     check(device.createTypedDescriptorSetLayoutWithContext(
-        &m_FilterDescriptorSetLayout, context,
+        &m_PrimaryDescriptorSetLayout, context,
         vk::DescriptorSetLayoutCreateFlagBits::bUpdateAfterBindPool));
 
     vk::PushConstantRange pushConstantRanges[2];
     auto& [vertPushConstantRange, fragPushConstantRange] = pushConstantRanges;
     vertPushConstantRange.setStageFlags(vk::ShaderStageFlagBits::bVertex);
-    vertPushConstantRange.setOffset(0);
-    vertPushConstantRange.setSize(sizeof(VsInput));
+    VsInput::SetRange(vertPushConstantRange);
 
     fragPushConstantRange.setStageFlags(vk::ShaderStageFlagBits::bFragment);
-    fragPushConstantRange.setOffset(72);
-    fragPushConstantRange.setSize(4);
+    FsInput::SetRange(fragPushConstantRange);
 
     vk::PipelineLayoutCreateInfo pipelineLayoutInfo;
     pipelineLayoutInfo.setPushConstantRanges(pushConstantRanges);
-    pipelineLayoutInfo.setPushConstantRangeCount(1);
-
-    m_BasicPipelineLayout =
-        device.createPipelineLayout(pipelineLayoutInfo).get();
-    
     pipelineLayoutInfo.setPushConstantRangeCount(2);
 
     vk::DescriptorSetLayout descriptorSetLayouts[] = {
-        m_FilterDescriptorSetLayout, m_TextureDescriptorSetLayout};
-    pipelineLayoutInfo.setSetLayoutCount(2);
+        m_PrimaryDescriptorSetLayout, m_TextureDescriptorSetLayout};
     pipelineLayoutInfo.setSetLayouts(descriptorSetLayouts);
+
+    pipelineLayoutInfo.setSetLayoutCount(1);
+
+    m_PrimaryPipelineLayout =
+        device.createPipelineLayout(pipelineLayoutInfo).get();
+
+    pipelineLayoutInfo.setSetLayoutCount(2);
 
     m_TexturePipelineLayout =
         device.createPipelineLayout(pipelineLayoutInfo).get();
@@ -1439,22 +1483,23 @@ void Renderer_VX::InitPipelineLayouts() {
     m_GradientPipelineLayout =
         device.createPipelineLayout(pipelineLayoutInfo).get();
 
-    // pipelineLayoutInfo.setPushConstantRanges(&fragPushConstantRange);
-
-    m_ColorMatrixPipelineLayout =
-        device.createPipelineLayout(pipelineLayoutInfo).get();
-
     pipelineLayoutInfo.setSetLayoutCount(1);
-
-    m_FilterPipelineLayout =
-        device.createPipelineLayout(pipelineLayoutInfo).get();
-
-    // pipelineLayoutInfo.setPushConstantRanges(&vertPushConstantRange);
 
     pipelineLayoutInfo.setSetLayouts(&m_BlurDescriptorSetLayout);
 
     m_BlurPipelineLayout =
         device.createPipelineLayout(pipelineLayoutInfo).get();
+
+#ifndef NDEBUG
+    device.setDebugUtilsObjectNameEXT(m_PrimaryPipelineLayout,
+                                      "m_PrimaryPipelineLayout");
+    device.setDebugUtilsObjectNameEXT(m_TexturePipelineLayout,
+                                      "m_TexturePipelineLayout");
+    device.setDebugUtilsObjectNameEXT(m_GradientPipelineLayout,
+                                      "m_GradientPipelineLayout");
+    device.setDebugUtilsObjectNameEXT(m_BlurPipelineLayout,
+                                      "m_BlurPipelineLayout");
+#endif // !NDEBUG
 }
 
 void Renderer_VX::InitPipelines(
@@ -1531,7 +1576,7 @@ void Renderer_VX::InitPipelines(
     vertexAttributeDescriptions[0].setOffset(offsetof(Rml::Vertex, position));
     pipelineBuilder.setVertexAttributeDescriptionCount(1);
 
-    pipelineBuilder.setLayout(m_BasicPipelineLayout);
+    pipelineBuilder.setLayout(m_PrimaryPipelineLayout);
     shaderStageInfos[0].setModule(clipVertShader);
 
     m_ClipPipeline = pipelineBuilder.build(device).get();
@@ -1580,7 +1625,7 @@ void Renderer_VX::InitPipelines(
 
     m_TexturePipeline = pipelineBuilder.build(device).get();
 
-    pipelineBuilder.setLayout(m_FilterPipelineLayout);
+    pipelineBuilder.setLayout(m_PrimaryPipelineLayout);
 
     dynamicStates[4] = vk::DynamicState::eBlendConstants;
     dynamicStates[5] = vk::DynamicState::eColorBlendEnableEXT;
@@ -1610,7 +1655,6 @@ void Renderer_VX::InitPipelines(
 
     m_BlendMaskPipeline = pipelineBuilder.build(device).get();
 
-    pipelineBuilder.setLayout(m_ColorMatrixPipelineLayout);
     shaderStageInfos[1].setModule(colorMatrixFragShader);
 
     m_ColorMatrixPipeline = pipelineBuilder.build(device).get();
@@ -1632,6 +1676,44 @@ void Renderer_VX::InitPipelines(
     device.destroyShaderModule(blurFragShader);
     device.destroyShaderModule(colorMatrixFragShader);
     device.destroyShaderModule(blendMaskFragShader);
+
+#ifndef NDEBUG
+    device.setDebugUtilsObjectNameEXT(m_ClipPipeline, "m_ClipPipeline");
+    device.setDebugUtilsObjectNameEXT(m_ColorPipeline, "m_ColorPipeline");
+    device.setDebugUtilsObjectNameEXT(m_GradientPipeline, "m_GradientPipeline");
+    device.setDebugUtilsObjectNameEXT(m_TexturePipeline, "m_TexturePipeline");
+    device.setDebugUtilsObjectNameEXT(m_PassthroughPipeline,
+                                      "m_PassthroughPipeline");
+    device.setDebugUtilsObjectNameEXT(m_ColorMatrixPipeline,
+                                      "m_ColorMatrixPipeline");
+    device.setDebugUtilsObjectNameEXT(m_BlendMaskPipeline,
+                                      "m_BlendMaskPipeline");
+    device.setDebugUtilsObjectNameEXT(m_BlurPipeline, "m_BlurPipeline");
+#endif
+}
+
+Renderer_VX::BufferResource
+Renderer_VX::CreateBufferResource(size_t size, vk::BufferUsageFlags usageFlags,
+                                  vma::AllocationInfo* allocInfo) {
+    BufferResource b;
+
+    vk::BufferCreateInfo bufferInfo;
+    bufferInfo.setSize(size);
+    bufferInfo.setUsage(usageFlags);
+    bufferInfo.setSharingMode(vk::SharingMode::eExclusive);
+
+    vma::AllocationCreateInfo allocationInfo;
+    allocationInfo.setFlags(
+        vma::AllocationCreateFlagBits::bMapped |
+        vma::AllocationCreateFlagBits::bHostAccessSequentialWrite);
+    allocationInfo.setUsage(vma::MemoryUsage::eAutoPreferDevice);
+
+    b.m_Buffer = m_Gfx->m_Allocator
+                     .createBuffer(bufferInfo, allocationInfo, &b.m_Allocation,
+                                   allocInfo)
+                     .get();
+
+    return b;
 }
 
 Rml::TextureHandle Renderer_VX::CreateTexture(vk::Buffer buffer,
@@ -1697,23 +1779,13 @@ Renderer_VX::CreateGeometry(Rml::Span<const Rml::Vertex> vertices,
 
     const auto vertexBytes = g.m_VertexCount * sizeof(Rml::Vertex);
     const auto indexBytes = g.m_IndexCount * sizeof(uint32_t);
-    vk::BufferCreateInfo bufferInfo;
-    bufferInfo.setSize(vertexBytes + indexBytes);
-    bufferInfo.setUsage(vk::BufferUsageFlagBits::bVertexBuffer |
-                        vk::BufferUsageFlagBits::bIndexBuffer);
-    bufferInfo.setSharingMode(vk::SharingMode::eExclusive);
-
-    vma::AllocationCreateInfo allocationInfo;
-    allocationInfo.setFlags(
-        vma::AllocationCreateFlagBits::bMapped |
-        vma::AllocationCreateFlagBits::bHostAccessSequentialWrite);
-    allocationInfo.setUsage(vma::MemoryUsage::eAutoPreferDevice);
 
     vma::AllocationInfo allocInfo;
-    g.m_Buffer = m_Gfx->m_Allocator
-                     .createBuffer(bufferInfo, allocationInfo, &g.m_Allocation,
-                                   &allocInfo)
-                     .get();
+    static_cast<BufferResource&>(g) =
+        CreateBufferResource(vertexBytes + indexBytes,
+                             vk::BufferUsageFlagBits::bVertexBuffer |
+                                 vk::BufferUsageFlagBits::bIndexBuffer,
+                             &allocInfo);
 
     auto p = static_cast<uint8_t*>(allocInfo.getMappedData());
     std::memcpy(p, vertices.data(), vertexBytes);
@@ -1723,29 +1795,10 @@ Renderer_VX::CreateGeometry(Rml::Span<const Rml::Vertex> vertices,
     return g;
 }
 
-Renderer_VX::ShaderResource Renderer_VX::CreateShaderResource(const void* data,
-                                                              size_t size) {
-    ShaderResource s;
-
-    vk::BufferCreateInfo bufferInfo;
-    bufferInfo.setSize(size);
-    bufferInfo.setUsage(vk::BufferUsageFlagBits::bUniformBuffer);
-    bufferInfo.setSharingMode(vk::SharingMode::eExclusive);
-
-    vma::AllocationCreateInfo allocationInfo;
-    allocationInfo.setFlags(
-        vma::AllocationCreateFlagBits::bMapped |
-        vma::AllocationCreateFlagBits::bHostAccessSequentialWrite);
-    allocationInfo.setUsage(vma::MemoryUsage::eAutoPreferDevice);
-
-    vma::AllocationInfo allocInfo;
-    s.m_Buffer = m_Gfx->m_Allocator
-                     .createBuffer(bufferInfo, allocationInfo, &s.m_Allocation,
-                                   &allocInfo)
-                     .get();
-
-    std::memcpy(allocInfo.getMappedData(), data, size);
-    return s;
+void Renderer_VX::ReleaseFrameResource(FrameResource& frameResource) {
+    if (frameResource.m_StorageBuffer.m_Buffer) {
+        DestroyResource(frameResource.m_StorageBuffer);
+    }
 }
 
 void Renderer_VX::RenderFilters(
@@ -1790,18 +1843,9 @@ void Renderer_VX::RenderFilter(const ColorMatrixFilter& filter) {
     m_CommandBuffer.cmdBindPipeline(vk::PipelineBindPoint::eGraphics,
                                     m_ColorMatrixPipeline);
 
-    {
-        ColorMatrixFsInput input{.colorMatrix = filter.colorMatrix};
-        const uint8_t useFlag = 2u << m_Gfx->m_FrameNumber;
-        const auto resource = m_ShaderResources.Create(
-            CreateShaderResource(&input, sizeof(input)), useFlag);
-
-        const vx::DescriptorSet<UniformDescriptorSet> descriptorSet;
-        m_CommandBuffer.cmdPushDescriptorSetKHR(
-            vk::PipelineBindPoint::eGraphics, m_ColorMatrixPipelineLayout, 1,
-            {descriptorSet->uniform = vx::UniformBufferDescriptor(
-                 m_ShaderResources.Get(resource).m_Buffer)});
-    }
+    m_CommandBuffer.cmdPushConstant(
+        m_PrimaryPipelineLayout, vk::ShaderStageFlagBits::bFragment,
+        VX_FIELD(FsInput, colorMatrixIdx) = CreateMatrix(filter.colorMatrix));
 
     m_GeometryResources.Get(~m_FullscreenQuadGeometry).Draw(m_CommandBuffer);
     m_CommandBuffer.cmdEndRendering();

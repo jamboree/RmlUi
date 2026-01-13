@@ -22,12 +22,6 @@ struct ImageAttachment : ImagePair {
     vma::Allocation m_Allocation;
 };
 
-struct FrameResource {
-    vk::Image m_Image;
-    vk::ImageView m_ImageView;
-    vk::Semaphore m_RenderSemaphore;
-};
-
 struct GfxContext_VX {
     static constexpr uint32_t VulkanApiVersion = VK_API_VERSION_1_3;
     static constexpr uint32_t InFlightCount = 2;
@@ -37,6 +31,12 @@ struct GfxContext_VX {
         VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME};
 
     struct DeviceFeatures;
+
+    struct FrameResource {
+        vk::Image m_Image;
+        vk::ImageView m_ImageView;
+        vk::Semaphore m_RenderSemaphore;
+    };
 
     vx::Instance m_Instance;
 #ifndef NDEBUG

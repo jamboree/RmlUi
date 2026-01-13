@@ -50,6 +50,7 @@ struct GfxContext_VX::DeviceFeatures
         REQIRE_FEATURE(extendedDynamicState3ColorBlendEquation);
         REQIRE_FEATURE(bufferDeviceAddress);
         REQIRE_FEATURE(descriptorBindingPartiallyBound);
+        REQIRE_FEATURE(descriptorBindingStorageBufferUpdateAfterBind);
         REQIRE_FEATURE(descriptorBindingSampledImageUpdateAfterBind);
         REQIRE_FEATURE(uniformBufferStandardLayout);
         return true;

@@ -13,7 +13,7 @@ struct Renderer_VX : Rml::RenderInterface {
     void BeginFrame(vx::CommandBuffer commandBuffer);
     void EndFrame();
     void ResetRenderTarget();
-    void ReleaseAllResourceUse(uint8_t useFlags);
+    void ReleaseFrame(unsigned frameNumber);
 
     /// Called by RmlUi when it wants to compile geometry to be rendered later.
     Rml::CompiledGeometryHandle
@@ -99,14 +99,17 @@ struct Renderer_VX : Rml::RenderInterface {
     void ReleaseFilter(Rml::CompiledFilterHandle filter) override;
 
 private:
+    struct PrimaryDescriptorSet;
     struct TextureDescriptorSet;
     struct UniformDescriptorSet;
     struct BlurDescriptorSet;
-    struct FilterDescriptorSet;
 
+    struct BufferResource;
     struct GeometryResource;
     struct TextureResource;
     struct ShaderResource;
+
+    struct FrameResource;
 
     struct FilterBase;
     struct PassthroughFilter;
@@ -236,17 +239,22 @@ private:
     void InitPipelineLayouts();
     void InitPipelines(vk::PipelineRenderingCreateInfo& renderingInfo);
 
+    BufferResource
+    CreateBufferResource(size_t size, vk::BufferUsageFlags usageFlags,
+                         vma::AllocationInfo* allocInfo = nullptr);
+
     Rml::TextureHandle CreateTexture(vk::Buffer buffer,
                                      Rml::Vector2i dimensions);
 
     GeometryResource CreateGeometry(Rml::Span<const Rml::Vertex> vertices,
                                     Rml::Span<const int> indices);
 
-    ShaderResource CreateShaderResource(const void* data, size_t size);
+    void ReleaseFrameResource(FrameResource& frameResource);
 
-    void DestroyResource(GeometryResource& g);
+    void ReleaseAllResourceUse(uint8_t useFlags);
+
+    void DestroyResource(BufferResource& b);
     void DestroyResource(TextureResource& t);
-    void DestroyResource(ShaderResource& s);
 
     void BeginLayerRendering(Rml::LayerHandle handle);
 
@@ -297,20 +305,24 @@ private:
 
     void RenderBlur(float sigma, const unsigned (&postprocess)[2]);
 
+    unsigned CreateMatrix(const Rml::Matrix4f& matrix) {
+        const auto idx = unsigned(m_Matrices.size());
+        m_Matrices.push_back(matrix);
+        return idx;
+    }
+
     GfxContext_VX* m_Gfx = nullptr;
     ResourcePool<GeometryResource> m_GeometryResources;
     ResourcePool<TextureResource> m_TextureResources;
     ResourcePool<ShaderResource> m_ShaderResources;
     SurfaceManager m_SurfaceManager;
+    vx::DescriptorSetLayout<PrimaryDescriptorSet> m_PrimaryDescriptorSetLayout;
     vx::DescriptorSetLayout<TextureDescriptorSet> m_TextureDescriptorSetLayout;
     vx::DescriptorSetLayout<UniformDescriptorSet> m_UniformDescriptorSetLayout;
     vx::DescriptorSetLayout<BlurDescriptorSet> m_BlurDescriptorSetLayout;
-    vx::DescriptorSetLayout<FilterDescriptorSet> m_FilterDescriptorSetLayout;
-    vk::PipelineLayout m_BasicPipelineLayout;
+    vk::PipelineLayout m_PrimaryPipelineLayout;
     vk::PipelineLayout m_TexturePipelineLayout;
     vk::PipelineLayout m_GradientPipelineLayout;
-    vk::PipelineLayout m_FilterPipelineLayout;
-    vk::PipelineLayout m_ColorMatrixPipelineLayout;
     vk::PipelineLayout m_BlurPipelineLayout;
     vk::Pipeline m_ClipPipeline;
     vk::Pipeline m_ColorPipeline;
@@ -323,10 +335,11 @@ private:
     vk::Pipeline m_BlurPipeline;
     vk::Sampler m_Sampler;
     vk::DescriptorPool m_DescriptorPool;
-    vx::DescriptorSet<FilterDescriptorSet> m_FilterDescriptorSet;
+    std::unique_ptr<FrameResource[]> m_FrameResources;
     vx::CommandBuffer m_CommandBuffer;
     vk::Rect2D m_Scissor;
     // Rml::Matrix4f m_Transform;
+    std::vector<Rml::Matrix4f> m_Matrices;
     Rml::CompiledGeometryHandle m_FullscreenQuadGeometry = 0;
     Rml::LayerHandle m_CurrentLayer = 0;
     uint32_t m_StencilRef = 0;

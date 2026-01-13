@@ -1,7 +1,7 @@
 #version 460
 #extension GL_GOOGLE_include_directive : require
 
-#include "BindlessTextures.h"
+#include "BindlessTextures.glsl"
 
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 0) out vec4 finalColor;

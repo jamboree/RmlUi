@@ -1,0 +1,10 @@
+layout(set = 0, binding = 0) readonly buffer MatrixBuffer {
+	mat4 matrices[];
+};
+layout(set = 0, binding = 1) uniform sampler mySampler;
+layout(set = 0, binding = 2) uniform texture2D textures[4];
+
+layout(push_constant) uniform FsInput {
+    layout(offset = 16) uint texIdx;
+    uint colorMatrixIdx;
+};
