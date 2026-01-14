@@ -1,6 +1,7 @@
 #include "RmlUi_Renderer_VX.h"
 #include <RmlUi/Core/Core.h>
 #include <RmlUi/Core/DecorationTypes.h>
+#include <RmlUi/Core/SystemInterface.h>
 #include <RmlUi/Core/FileInterface.h>
 #include <RmlUi/Core/Log.h>
 #include "RmlUi_VX/ShadersCompiledSPV.h"
@@ -94,10 +95,9 @@ struct QuadMesh {
     }
 };
 
-struct BlurParams {
+struct TexCoordLimits {
     Rml::Vector2f texCoordMin;
     Rml::Vector2f texCoordMax;
-    float weights[BLUR_NUM_WEIGHTS];
 
     void SetTexCoordLimits(const vk::Rect2D& rectangle_flipped,
                            vk::Extent2D framebuffer_size) {
@@ -116,6 +116,14 @@ struct BlurParams {
                          rectangle_flipped.extent.height - 0.5f) /
                         framebuffer_size.height;
     }
+};
+
+struct DropShadowParams : TexCoordLimits {
+    Rml::Colourf color;
+};
+
+struct BlurParams : TexCoordLimits {
+    float weights[BLUR_NUM_WEIGHTS];
 
     void SetBlurWeights(float sigma) {
         constexpr int num_weights = BLUR_NUM_WEIGHTS;
@@ -133,6 +141,11 @@ struct BlurParams {
         for (int i = 0; i < num_weights; ++i)
             weights[i] /= normalization;
     }
+};
+
+struct CreationParams {
+    float value;
+    Rml::Vector2f dimensions;
 };
 
 struct VsInput {
@@ -155,6 +168,7 @@ struct FsInput {
     union {
         unsigned colorMatrixIdx;
         BlurParams blurParams;
+        DropShadowParams dropShadowParams;
     };
 
     static void SetRange(vk::PushConstantRange& range) {
@@ -187,8 +201,6 @@ struct Renderer_VX::TextureResource {
     vk::ImageView m_ImageView;
     vma::Allocation m_Allocation;
 };
-
-struct Renderer_VX::ShaderResource : BufferResource {};
 
 struct Renderer_VX::FrameResource {
     vx::DescriptorSet<PrimaryDescriptorSet> m_PrimaryDescriptorSet; // not own
@@ -395,6 +407,12 @@ void Renderer_VX::Destroy() {
     if (m_BlurPipeline) {
         device.destroyPipeline(m_BlurPipeline);
     }
+    if (m_DropShadowPipeline) {
+        device.destroyPipeline(m_DropShadowPipeline);
+    }
+    if (m_CreationPipeline) {
+        device.destroyPipeline(m_CreationPipeline);
+    }
     if (m_PrimaryPipelineLayout) {
         device.destroyPipelineLayout(m_PrimaryPipelineLayout);
     }
@@ -527,7 +545,7 @@ void Renderer_VX::RenderGeometry(Rml::CompiledGeometryHandle geometry,
 void Renderer_VX::ReleaseAllResourceUse(uint8_t useFlags) {
     m_GeometryResources.ReleaseAllUse(*this, useFlags);
     m_TextureResources.ReleaseAllUse(*this, useFlags);
-    m_ShaderResources.ReleaseAllUse(*this, useFlags);
+    m_BufferResources.ReleaseAllUse(*this, useFlags);
 }
 
 void Renderer_VX::DestroyResource(BufferResource& b) {
@@ -749,7 +767,7 @@ inline Rml::Colourf ConvertToColorf(Rml::ColourbPremultiplied c0) {
     return {c0[0] / 255.f, c0[1] / 255.f, c0[2] / 255.f, c0[3] / 255.f};
 }
 
-struct GradientUniform {
+struct GradientData {
     static constexpr int MAX_NUM_STOPS = 16;
     enum { LINEAR = 0, RADIAL = 1, CONIC = 2, REPEATING = 1 };
 
@@ -781,45 +799,93 @@ struct GradientUniform {
     }
 
     vk::DeviceSize GetUsedSize() const {
-        return offsetof(GradientUniform, stopColors) +
+        return offsetof(GradientData, stopColors) +
                sizeof(Rml::Colourf) * numStops;
     }
 };
 
+struct Renderer_VX::ShaderBase {
+    enum Type { Gradient, Creation };
+
+    Type type;
+    constexpr ShaderBase(Type type) : type(type) {}
+};
+
+struct Renderer_VX::GradientShader : ShaderBase {
+    GradientShader() : ShaderBase(Gradient) {}
+    uintptr_t uniformBuffer;
+
+    void Destroy(Renderer_VX* p) {
+        p->m_BufferResources.Release(*p, uniformBuffer);
+        delete this;
+    }
+};
+
+struct Renderer_VX::CreationShader : ShaderBase {
+    CreationShader() : ShaderBase(Creation) {}
+    Rml::Vector2f dimensions;
+
+    void Destroy(Renderer_VX*) { delete this; }
+};
+
+template<class T>
+inline Rml::CompiledShaderHandle CreateShader(T&& shader) {
+    return reinterpret_cast<Rml::CompiledShaderHandle>(
+        new T(std::move(shader)));
+}
+
 Rml::CompiledShaderHandle
 Renderer_VX::CompileShader(const Rml::String& name,
                            const Rml::Dictionary& parameters) {
-    GradientUniform uniform;
+    GradientData gradientData;
+    bool invalid = false;
     if (name == "linear-gradient") {
-        uniform.func = GradientUniform::LINEAR << 1;
-        uniform.pos = Rml::Get(parameters, "p0", Rml::Vector2f(0.f));
-        uniform.vec =
-            Rml::Get(parameters, "p1", Rml::Vector2f(0.f)) - uniform.pos;
+        gradientData.func = GradientData::LINEAR << 1;
+        gradientData.pos = Rml::Get(parameters, "p0", Rml::Vector2f(0.f));
+        gradientData.vec =
+            Rml::Get(parameters, "p1", Rml::Vector2f(0.f)) - gradientData.pos;
     } else if (name == "radial-gradient") {
-        uniform.func = GradientUniform::RADIAL << 1;
-        uniform.pos = Rml::Get(parameters, "center", Rml::Vector2f(0.f));
-        uniform.vec = Rml::Vector2f(1.f) /
-                      Rml::Get(parameters, "radius", Rml::Vector2f(1.f));
+        gradientData.func = GradientData::RADIAL << 1;
+        gradientData.pos = Rml::Get(parameters, "center", Rml::Vector2f(0.f));
+        gradientData.vec = Rml::Vector2f(1.f) /
+                           Rml::Get(parameters, "radius", Rml::Vector2f(1.f));
     } else if (name == "conic-gradient") {
-        uniform.func = GradientUniform::CONIC << 1;
-        uniform.pos = Rml::Get(parameters, "center", Rml::Vector2f(0.f));
+        gradientData.func = GradientData::CONIC << 1;
+        gradientData.pos = Rml::Get(parameters, "center", Rml::Vector2f(0.f));
         const float angle = Rml::Get(parameters, "angle", 0.f);
-        uniform.vec = {Rml::Math::Cos(angle), Rml::Math::Sin(angle)};
+        gradientData.vec = {Rml::Math::Cos(angle), Rml::Math::Sin(angle)};
+    } else if (name == "shader") {
+        const Rml::String value = Rml::Get(parameters, "value", Rml::String());
+        if (value == "creation") {
+            CreationShader shader;
+            shader.dimensions =
+                Rml::Get(parameters, "dimensions", Rml::Vector2f(0.f));
+            return CreateShader(std::move(shader));
+        }
+        invalid = true;
     } else {
+        invalid = true;
+    }
+
+    if (invalid) {
         Rml::Log::Message(Rml::Log::LT_WARNING, "Unsupported shader type '%s'.",
                           name.c_str());
         return {};
     }
-    if (Rml::Get(parameters, "repeating", false))
-        uniform.func |= GradientUniform::REPEATING;
-    uniform.ApplyColorStopList(parameters);
 
-    const auto size = uniform.GetUsedSize();
+    if (Rml::Get(parameters, "repeating", false))
+        gradientData.func |= GradientData::REPEATING;
+    gradientData.ApplyColorStopList(parameters);
+
+    const auto size = gradientData.GetUsedSize();
     vma::AllocationInfo allocInfo;
-    ShaderResource s{CreateBufferResource(
-        size, vk::BufferUsageFlagBits::bUniformBuffer, &allocInfo)};
-    std::memcpy(allocInfo.getMappedData(), &uniform, size);
-    return ~m_ShaderResources.Create(s);
+    const auto b = CreateBufferResource(
+        size, vk::BufferUsageFlagBits::bUniformBuffer, &allocInfo);
+    std::memcpy(allocInfo.getMappedData(), &gradientData, size);
+
+    GradientShader gradientShader;
+    gradientShader.uniformBuffer = m_BufferResources.Create(b);
+    return CreateShader(std::move(gradientShader));
 }
 
 void Renderer_VX::RenderShader(Rml::CompiledShaderHandle shader,
@@ -827,21 +893,17 @@ void Renderer_VX::RenderShader(Rml::CompiledShaderHandle shader,
                                Rml::Vector2f translation,
                                Rml::TextureHandle /*texture*/) {
     const uint8_t useFlag = 2u << m_Gfx->m_FrameIndex;
-    const auto& s = m_ShaderResources.Use(~shader, useFlag);
     const auto& g = m_GeometryResources.Use(~geometry, useFlag);
 
     ActivateLayerRendering();
 
-    const vx::DescriptorSet<UniformDescriptorSet> descriptorSet;
-    m_CommandBuffer.cmdPushDescriptorSetKHR(
-        vk::PipelineBindPoint::eGraphics, m_GradientPipelineLayout, 1,
-        {descriptorSet->uniform = s.m_Buffer});
-    m_CommandBuffer.cmdBindPipeline(vk::PipelineBindPoint::eGraphics,
-                                    m_GradientPipeline);
-
-    m_CommandBuffer.cmdPushConstant(m_GradientPipelineLayout,
+    m_CommandBuffer.cmdPushConstant(m_PrimaryPipelineLayout,
                                     vk::ShaderStageFlagBits::bVertex,
                                     VX_FIELD(VsInput, translate) = translation);
+
+    VisitShader(reinterpret_cast<ShaderBase*>(shader),
+                [this](auto* p) { SetShader(*p); });
+
     g.Draw(m_CommandBuffer);
 }
 
@@ -957,17 +1019,24 @@ const ImageAttachment& Renderer_VX::GetPostprocess(unsigned index) {
     return fb;
 }
 
-vk::Image Renderer_VX::BeginPostprocess(unsigned index) {
+vk::Image Renderer_VX::BeginPostprocess(unsigned index, bool load) {
     const auto& colorImage = GetPostprocess(index);
     vx::ImageMemoryBarrierState colorImageBarrier;
 
     colorImageBarrier.init(
         colorImage.m_Image,
         vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
+    if (load) {
+        colorImageBarrier.setOldLayout(vk::ImageLayout::eTransferDstOptimal);
+        colorImageBarrier.setSrcStageAccess(
+            vk::PipelineStageFlagBits2::bTransfer,
+            vk::AccessFlagBits2::bTransferWrite);
+    } else {
+        colorImageBarrier.setSrcStageAccess(
+            vk::PipelineStageFlagBits2::bFragmentShader,
+            vk::AccessFlagBits2::bShaderRead);
+    }
     colorImageBarrier.setNewLayout(vk::ImageLayout::eAttachmentOptimal);
-    colorImageBarrier.setSrcStageAccess(
-        vk::PipelineStageFlagBits2::bFragmentShader,
-        vk::AccessFlagBits2::bShaderRead);
     colorImageBarrier.setDstStageAccess(
         vk::PipelineStageFlagBits2::bColorAttachmentOutput,
         vk::AccessFlagBits2::bColorAttachmentWrite);
@@ -977,9 +1046,13 @@ vk::Image Renderer_VX::BeginPostprocess(unsigned index) {
     vk::RenderingAttachmentInfo colorAttachmentInfo;
     colorAttachmentInfo.setImageView(colorImage.m_ImageView);
     colorAttachmentInfo.setImageLayout(colorImageBarrier.getNewLayout());
-    colorAttachmentInfo.setLoadOp(vk::AttachmentLoadOp::eClear);
     colorAttachmentInfo.setStoreOp(vk::AttachmentStoreOp::eStore);
-    colorAttachmentInfo.setClearValue({.color = vk::ClearColorValue()});
+    if (load) {
+        colorAttachmentInfo.setLoadOp(vk::AttachmentLoadOp::eLoad);
+    } else {
+        colorAttachmentInfo.setLoadOp(vk::AttachmentLoadOp::eClear);
+        colorAttachmentInfo.setClearValue({.color = vk::ClearColorValue()});
+    }
 
     const vk::Rect2D renderArea{{0, 0}, m_Gfx->m_FrameExtent};
 
@@ -1072,6 +1145,21 @@ void Renderer_VX::ResolveLayer(Rml::LayerHandle source, vk::Image dstImage) {
     }
 }
 
+void Renderer_VX::RenderPassthrough(vk::Pipeline pipeline,
+                                    vk::Bool32 colorBlendEnable) {
+    m_CommandBuffer.cmdBindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
+
+    m_CommandBuffer.cmdSetColorBlendEnableEXT(0, 1, &colorBlendEnable);
+    if (colorBlendEnable) {
+        const auto colorBlendEquation =
+            MakeColorBlendEquation(vk::BlendOp::eAdd, vk::BlendFactor::eOne,
+                                   vk::BlendFactor::eOneMinusSrcAlpha);
+        m_CommandBuffer.cmdSetColorBlendEquationEXT(0, 1, &colorBlendEquation);
+    }
+
+    m_GeometryResources.Get(~m_FullscreenQuadGeometry).Draw(m_CommandBuffer);
+}
+
 Rml::CompiledGeometryHandle
 Renderer_VX::UseFullscreenQuad(Rml::Vector2f uv_offset,
                                Rml::Vector2f uv_scaling) {
@@ -1088,7 +1176,8 @@ Renderer_VX::UseFullscreenQuad(Rml::Vector2f uv_offset,
 
 void Renderer_VX::ReleaseShader(Rml::CompiledShaderHandle shader) {
     RMLUI_ASSERT(shader);
-    m_ShaderResources.Release(*this, ~shader);
+    VisitShader(reinterpret_cast<ShaderBase*>(shader),
+                [this](auto* p) { p->Destroy(this); });
 }
 
 Rml::LayerHandle Renderer_VX::PushLayer() {
@@ -1129,22 +1218,10 @@ void Renderer_VX::CompositeLayers(
     ActivateLayerRendering();
     SetPostprocessSample(m_PostprocessIndex);
 
-    m_CommandBuffer.cmdBindPipeline(vk::PipelineBindPoint::eGraphics,
-                                    m_Gfx->m_SampleCount ==
-                                            vk::SampleCountFlagBits::b1
-                                        ? m_PassthroughPipeline
-                                        : m_MsPassthroughPipeline);
-
-    const vk::Bool32 colorBlendEnable = blend_mode == BlendMode::Blend;
-    m_CommandBuffer.cmdSetColorBlendEnableEXT(0, 1, &colorBlendEnable);
-    if (colorBlendEnable) {
-        const auto colorBlendEquation =
-            MakeColorBlendEquation(vk::BlendOp::eAdd, vk::BlendFactor::eOne,
-                                   vk::BlendFactor::eOneMinusSrcAlpha);
-        m_CommandBuffer.cmdSetColorBlendEquationEXT(0, 1, &colorBlendEquation);
-    }
-
-    m_GeometryResources.Get(~m_FullscreenQuadGeometry).Draw(m_CommandBuffer);
+    RenderPassthrough(m_Gfx->m_SampleCount == vk::SampleCountFlagBits::b1
+                          ? m_PassthroughPipeline
+                          : m_MsPassthroughPipeline,
+                      blend_mode == BlendMode::Blend);
 
     const auto topLayer = m_SurfaceManager.GetTopLayerHandle();
     if (topLayer != destination) {
@@ -1227,38 +1304,37 @@ Rml::TextureHandle Renderer_VX::SaveLayerAsTexture() {
     return ~m_TextureResources.Create(t);
 }
 
-enum class FilterType { Passthrough, Blur, DropShadow, ColorMatrix, MaskImage };
-
 struct Renderer_VX::FilterBase {
-    FilterType type;
+    enum Type { Passthrough, Blur, DropShadow, ColorMatrix, MaskImage };
 
-    constexpr FilterBase(FilterType type) : type(type) {}
+    Type type;
+    constexpr FilterBase(Type type) : type(type) {}
 };
 
 struct Renderer_VX::PassthroughFilter : FilterBase {
-    constexpr PassthroughFilter() : FilterBase(FilterType::Passthrough) {}
-    float blend_factor;
+    constexpr PassthroughFilter() : FilterBase(Passthrough) {}
+    float blendFactor;
 };
 
 struct Renderer_VX::BlurFilter : FilterBase {
-    constexpr BlurFilter() : FilterBase(FilterType::Blur) {}
+    constexpr BlurFilter() : FilterBase(Blur) {}
     float sigma;
 };
 
 struct Renderer_VX::DropShadowFilter : FilterBase {
-    DropShadowFilter() noexcept : FilterBase(FilterType::DropShadow) {}
+    DropShadowFilter() noexcept : FilterBase(DropShadow) {}
     float sigma;
     Rml::Vector2f offset;
     Rml::ColourbPremultiplied color;
 };
 
 struct Renderer_VX::ColorMatrixFilter : FilterBase {
-    ColorMatrixFilter() noexcept : FilterBase(FilterType::ColorMatrix) {}
+    ColorMatrixFilter() noexcept : FilterBase(ColorMatrix) {}
     Rml::Matrix4f colorMatrix;
 };
 
 struct Renderer_VX::MaskImageFilter : FilterBase {
-    constexpr MaskImageFilter() : FilterBase(FilterType::MaskImage) {}
+    constexpr MaskImageFilter() : FilterBase(MaskImage) {}
 };
 
 template<class T>
@@ -1286,7 +1362,7 @@ Renderer_VX::CompileFilter(const Rml::String& name,
                            const Rml::Dictionary& parameters) {
     if (name == "opacity") {
         PassthroughFilter filter;
-        filter.blend_factor = Rml::Get(parameters, "value", 1.0f);
+        filter.blendFactor = Rml::Get(parameters, "value", 1.0f);
         return CreateFilter(std::move(filter));
     } else if (name == "blur") {
         BlurFilter filter;
@@ -1392,13 +1468,21 @@ Renderer_VX::CompileFilter(const Rml::String& name,
 }
 
 template<class F>
+void Renderer_VX::VisitShader(ShaderBase* p, F f) {
+    switch (p->type) {
+    case ShaderBase::Gradient: return f(static_cast<GradientShader*>(p));
+    case ShaderBase::Creation: return f(static_cast<CreationShader*>(p));
+    }
+}
+
+template<class F>
 void Renderer_VX::VisitFilter(FilterBase* p, F f) {
     switch (p->type) {
-    case FilterType::Passthrough: return f(static_cast<PassthroughFilter*>(p));
-    case FilterType::Blur: return f(static_cast<BlurFilter*>(p));
-    case FilterType::DropShadow: return f(static_cast<DropShadowFilter*>(p));
-    case FilterType::ColorMatrix: return f(static_cast<ColorMatrixFilter*>(p));
-    case FilterType::MaskImage: return f(static_cast<MaskImageFilter*>(p));
+    case FilterBase::Passthrough: return f(static_cast<PassthroughFilter*>(p));
+    case FilterBase::Blur: return f(static_cast<BlurFilter*>(p));
+    case FilterBase::DropShadow: return f(static_cast<DropShadowFilter*>(p));
+    case FilterBase::ColorMatrix: return f(static_cast<ColorMatrixFilter*>(p));
+    case FilterBase::MaskImage: return f(static_cast<MaskImageFilter*>(p));
     }
 }
 
@@ -1494,6 +1578,10 @@ void Renderer_VX::InitPipelines(
         device.createShaderModule(shader_frag_color_matrix).get();
     const auto blendMaskFragShader =
         device.createShaderModule(shader_frag_blend_mask).get();
+    const auto dropShadowFragShader =
+        device.createShaderModule(shader_frag_drop_shadow).get();
+    const auto creationFragShader =
+        device.createShaderModule(shader_frag_creation).get();
 
     vx::GraphicsPipelineBuilder pipelineBuilder;
     pipelineBuilder.attach(renderingInfo);
@@ -1582,6 +1670,10 @@ void Renderer_VX::InitPipelines(
 
     m_ColorPipeline = pipelineBuilder.build(device).get();
 
+    shaderStageInfos[1].setModule(creationFragShader);
+
+    m_CreationPipeline = pipelineBuilder.build(device).get();
+
     pipelineBuilder.setLayout(m_GradientPipelineLayout);
     shaderStageInfos[1].setModule(gradientFragShader);
     m_GradientPipeline = pipelineBuilder.build(device).get();
@@ -1617,13 +1709,17 @@ void Renderer_VX::InitPipelines(
     pipelineBuilder.setDynamicStateCount(4);
     pipelineBuilder.setBlendEnable(false);
 
+    shaderStageInfos[1].setModule(colorMatrixFragShader);
+
+    m_ColorMatrixPipeline = pipelineBuilder.build(device).get();
+
     shaderStageInfos[1].setModule(blendMaskFragShader);
 
     m_BlendMaskPipeline = pipelineBuilder.build(device).get();
 
-    shaderStageInfos[1].setModule(colorMatrixFragShader);
+    shaderStageInfos[1].setModule(dropShadowFragShader);
 
-    m_ColorMatrixPipeline = pipelineBuilder.build(device).get();
+    m_DropShadowPipeline = pipelineBuilder.build(device).get();
 
     shaderStageInfos[0].setModule(blurVertShader);
     shaderStageInfos[1].setModule(blurFragShader);
@@ -1641,6 +1737,8 @@ void Renderer_VX::InitPipelines(
     device.destroyShaderModule(blurFragShader);
     device.destroyShaderModule(colorMatrixFragShader);
     device.destroyShaderModule(blendMaskFragShader);
+    device.destroyShaderModule(dropShadowFragShader);
+    device.destroyShaderModule(creationFragShader);
 
 #ifndef NDEBUG
     device.setDebugUtilsObjectNameEXT(m_ClipPipeline, "m_ClipPipeline");
@@ -1654,6 +1752,9 @@ void Renderer_VX::InitPipelines(
     device.setDebugUtilsObjectNameEXT(m_BlendMaskPipeline,
                                       "m_BlendMaskPipeline");
     device.setDebugUtilsObjectNameEXT(m_BlurPipeline, "m_BlurPipeline");
+    device.setDebugUtilsObjectNameEXT(m_DropShadowPipeline,
+                                      "m_DropShadowPipeline");
+    device.setDebugUtilsObjectNameEXT(m_CreationPipeline, "m_CreationPipeline");
 #endif
 }
 
@@ -1766,6 +1867,32 @@ void Renderer_VX::ReleaseFrameResource(FrameResource& frameResource) {
     }
 }
 
+void Renderer_VX::SetShader(const GradientShader& shader) {
+    const uint8_t useFlag = 2u << m_Gfx->m_FrameIndex;
+
+    m_CommandBuffer.cmdBindPipeline(vk::PipelineBindPoint::eGraphics,
+                                    m_GradientPipeline);
+
+    const vx::DescriptorSet<UniformDescriptorSet> descriptorSet;
+    m_CommandBuffer.cmdPushDescriptorSetKHR(
+        vk::PipelineBindPoint::eGraphics, m_GradientPipelineLayout, 1,
+        {descriptorSet->uniform =
+             m_BufferResources.Use(shader.uniformBuffer, useFlag).m_Buffer});
+}
+
+void Renderer_VX::SetShader(const CreationShader& shader) {
+    m_CommandBuffer.cmdBindPipeline(vk::PipelineBindPoint::eGraphics,
+                                    m_CreationPipeline);
+
+    CreationParams creationParams;
+    creationParams.value = float(Rml::GetSystemInterface()->GetElapsedTime());
+    creationParams.dimensions = shader.dimensions;
+
+    m_CommandBuffer.cmdPushConstants(m_PrimaryPipelineLayout,
+                                     vk::ShaderStageFlagBits::bFragment, 12,
+                                     sizeof(CreationParams), &creationParams);
+}
+
 void Renderer_VX::RenderFilters(
     Rml::Span<const Rml::CompiledFilterHandle> filterHandles) {
     for (const auto filterHandle : filterHandles) {
@@ -1787,8 +1914,8 @@ void Renderer_VX::RenderFilter(const PassthroughFilter& filter) {
         vk::BlendOp::eAdd, vk::BlendFactor::eConstantColor,
         vk::BlendFactor::eZero);
     m_CommandBuffer.cmdSetColorBlendEquationEXT(0, 1, &colorBlendEquation);
-    const float blendConstants[4] = {filter.blend_factor, filter.blend_factor,
-                                     filter.blend_factor, filter.blend_factor};
+    const float blendConstants[4] = {filter.blendFactor, filter.blendFactor,
+                                     filter.blendFactor, filter.blendFactor};
     m_CommandBuffer.cmdSetBlendConstants(blendConstants);
 
     m_GeometryResources.Get(~m_FullscreenQuadGeometry).Draw(m_CommandBuffer);
@@ -1799,9 +1926,42 @@ void Renderer_VX::RenderFilter(const PassthroughFilter& filter) {
 
 void Renderer_VX::RenderFilter(const BlurFilter& filter) {
     RenderBlur(filter.sigma, {m_PostprocessIndex, m_PostprocessIndex ^ 1});
+    TransitionToSample(GetPostprocess(m_PostprocessIndex).m_Image, true);
 }
 
-void Renderer_VX::RenderFilter(const DropShadowFilter&) {}
+void Renderer_VX::RenderFilter(const DropShadowFilter& filter) {
+    const auto postprocesImage = BeginPostprocess(m_PostprocessIndex ^ 1);
+    SetPostprocessSample(m_PostprocessIndex);
+
+    m_CommandBuffer.cmdBindPipeline(vk::PipelineBindPoint::eGraphics,
+                                    m_DropShadowPipeline);
+
+    const auto extent = m_Gfx->m_FrameExtent;
+    DropShadowParams dropShadowParams;
+    dropShadowParams.color = ConvertToColorf(filter.color);
+    dropShadowParams.SetTexCoordLimits(m_Scissor, extent);
+
+    m_CommandBuffer.cmdPushConstant(
+        m_PrimaryPipelineLayout, vk::ShaderStageFlagBits::bFragment,
+        VX_FIELD(FsInput, dropShadowParams) = dropShadowParams);
+
+    const auto uv_offset = -filter.offset / Rml::Vector2f(float(extent.width),
+                                                          float(extent.height));
+    const auto quadGeometry = UseFullscreenQuad(uv_offset, Rml::Vector2f(1.f));
+    m_GeometryResources.Get(~quadGeometry).Draw(m_CommandBuffer);
+
+    if (filter.sigma >= 0.5f) {
+        m_CommandBuffer.cmdEndRendering();
+        RenderBlur(filter.sigma, {m_PostprocessIndex ^ 1, 2});
+        BeginPostprocess(m_PostprocessIndex ^ 1, true);
+        SetPostprocessSample(m_PostprocessIndex);
+    }
+
+    RenderPassthrough(m_PassthroughPipeline, true);
+    m_CommandBuffer.cmdEndRendering();
+    TransitionToSample(postprocesImage, false);
+    m_PostprocessIndex ^= 1;
+}
 
 void Renderer_VX::RenderFilter(const ColorMatrixFilter& filter) {
     const auto postprocesImage = BeginPostprocess(m_PostprocessIndex ^ 1);
@@ -1983,6 +2143,4 @@ void Renderer_VX::RenderBlur(float sigma, const unsigned (&postprocess)[2]) {
             vx::subresourceLayers(vk::ImageAspectFlagBits::bColor, 1),
             vk::Filter::eLinear);
     }
-
-    TransitionToSample(postprocesImage0, true);
 }

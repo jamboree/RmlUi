@@ -110,9 +110,12 @@ private:
     struct BufferResource;
     struct GeometryResource;
     struct TextureResource;
-    struct ShaderResource;
 
     struct FrameResource;
+
+    struct ShaderBase;
+    struct GradientShader;
+    struct CreationShader;
 
     struct FilterBase;
     struct PassthroughFilter;
@@ -125,6 +128,11 @@ private:
 
     template<class T>
     struct ResourcePool {
+        ~ResourcePool() {
+            std::free(m_Uses);
+            std::free(m_Elems);
+        }
+
         uintptr_t Create(const T& resource, uint8_t useFlags = 1u) {
             uintptr_t index;
             if (m_FreeHead < m_Count) {
@@ -267,13 +275,15 @@ private:
 
     const ImageAttachment& GetPostprocess(unsigned index);
 
-    vk::Image BeginPostprocess(unsigned index);
+    vk::Image BeginPostprocess(unsigned index, bool load = false);
 
     void TransitionToSample(vk::Image image, bool fromTransfer);
 
     void SetPostprocessSample(unsigned index);
 
     void ResolveLayer(Rml::LayerHandle source, vk::Image dstImage);
+
+    void RenderPassthrough(vk::Pipeline pipeline, vk::Bool32 colorBlendEnable);
 
     Rml::CompiledGeometryHandle UseFullscreenQuad(Rml::Vector2f uv_offset,
                                                   Rml::Vector2f uv_scaling);
@@ -283,19 +293,21 @@ private:
     }
 
     template<class F>
+    static void VisitShader(ShaderBase* p, F f);
+
+    template<class F>
     static void VisitFilter(FilterBase* p, F f);
+
+    void SetShader(const GradientShader& shader);
+    void SetShader(const CreationShader& shader);
 
     void
     RenderFilters(Rml::Span<const Rml::CompiledFilterHandle> filterHandles);
 
     void RenderFilter(const PassthroughFilter& filter);
-
     void RenderFilter(const BlurFilter& filter);
-
     void RenderFilter(const DropShadowFilter&);
-
     void RenderFilter(const ColorMatrixFilter& filter);
-
     void RenderFilter(const MaskImageFilter& filter);
 
     void RenderBlur(float sigma, const unsigned (&postprocess)[2]);
@@ -309,7 +321,7 @@ private:
     GfxContext_VX* m_Gfx = nullptr;
     ResourcePool<GeometryResource> m_GeometryResources;
     ResourcePool<TextureResource> m_TextureResources;
-    ResourcePool<ShaderResource> m_ShaderResources;
+    ResourcePool<BufferResource> m_BufferResources;
     SurfaceManager m_SurfaceManager;
     vx::DescriptorSetLayout<PrimaryDescriptorSet> m_PrimaryDescriptorSetLayout;
     vx::DescriptorSetLayout<TextureDescriptorSet> m_TextureDescriptorSetLayout;
@@ -326,6 +338,8 @@ private:
     vk::Pipeline m_ColorMatrixPipeline;
     vk::Pipeline m_BlendMaskPipeline;
     vk::Pipeline m_BlurPipeline;
+    vk::Pipeline m_DropShadowPipeline;
+    vk::Pipeline m_CreationPipeline;
     vk::Sampler m_Sampler;
     vk::DescriptorPool m_DescriptorPool;
     std::unique_ptr<FrameResource[]> m_FrameResources;
