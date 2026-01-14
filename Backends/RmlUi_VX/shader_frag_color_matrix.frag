@@ -3,6 +3,11 @@
 
 #include "BindlessTextures.glsl"
 
+layout(push_constant) uniform FsInput {
+    TEX_IDX texIdx;
+    uint colorMatrixIdx;
+};
+
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 0) out vec4 finalColor;
 

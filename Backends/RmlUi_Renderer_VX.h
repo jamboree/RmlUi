@@ -106,7 +106,6 @@ private:
     struct PrimaryDescriptorSet;
     struct TextureDescriptorSet;
     struct UniformDescriptorSet;
-    struct BlurDescriptorSet;
 
     struct BufferResource;
     struct GeometryResource;
@@ -270,17 +269,9 @@ private:
 
     vk::Image BeginPostprocess(unsigned index);
 
-    unsigned PostprocessPrimary() const { return m_PostprocessPrimaryIndex; }
-
-    unsigned PostprocessSecondary() const {
-        return m_PostprocessPrimaryIndex ^ 1;
-    }
-
-    void SwapPostprocessPrimarySecondary() { m_PostprocessPrimaryIndex ^= 1; }
-
     void TransitionToSample(vk::Image image, bool fromTransfer);
 
-    void SetSample(unsigned index);
+    void SetPostprocessSample(unsigned index);
 
     void ResolveLayer(Rml::LayerHandle source, vk::Image dstImage);
 
@@ -297,11 +288,11 @@ private:
     void
     RenderFilters(Rml::Span<const Rml::CompiledFilterHandle> filterHandles);
 
-    void RenderFilter(const FilterBase&) {}
-
     void RenderFilter(const PassthroughFilter& filter);
 
     void RenderFilter(const BlurFilter& filter);
+
+    void RenderFilter(const DropShadowFilter&);
 
     void RenderFilter(const ColorMatrixFilter& filter);
 
@@ -323,11 +314,9 @@ private:
     vx::DescriptorSetLayout<PrimaryDescriptorSet> m_PrimaryDescriptorSetLayout;
     vx::DescriptorSetLayout<TextureDescriptorSet> m_TextureDescriptorSetLayout;
     vx::DescriptorSetLayout<UniformDescriptorSet> m_UniformDescriptorSetLayout;
-    vx::DescriptorSetLayout<BlurDescriptorSet> m_BlurDescriptorSetLayout;
     vk::PipelineLayout m_PrimaryPipelineLayout;
     vk::PipelineLayout m_TexturePipelineLayout;
     vk::PipelineLayout m_GradientPipelineLayout;
-    vk::PipelineLayout m_BlurPipelineLayout;
     vk::Pipeline m_ClipPipeline;
     vk::Pipeline m_ColorPipeline;
     vk::Pipeline m_GradientPipeline;
@@ -347,7 +336,7 @@ private:
     Rml::CompiledGeometryHandle m_FullscreenQuadGeometry = 0;
     Rml::LayerHandle m_CurrentLayer = 0;
     uint32_t m_StencilRef = 0;
-    unsigned m_PostprocessPrimaryIndex = 0;
+    unsigned m_PostprocessIndex = 0;
     bool m_EnableScissor = false;
     bool m_EnableClipMask = false;
     bool m_LayerRendering = false;

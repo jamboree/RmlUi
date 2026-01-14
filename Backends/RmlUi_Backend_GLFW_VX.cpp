@@ -250,7 +250,7 @@ struct BackendContext {
 
     void BeginFrame() {
         m_Gfx.AcquireNextFrame();
-        m_Renderer.ReleaseFrame(m_Gfx.m_FrameNumber);
+        m_Renderer.ReleaseFrame(m_Gfx.m_FrameIndex);
         if (m_Gfx.InitFrame()) {
             m_Gfx.RecreateRenderTarget(m_FrameExtent);
             m_Renderer.ResetRenderTarget();

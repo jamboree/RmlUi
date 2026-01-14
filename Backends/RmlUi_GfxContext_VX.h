@@ -32,7 +32,7 @@ struct GfxContext_VX {
 
     struct DeviceFeatures;
 
-    struct FrameResource {
+    struct PresentResource {
         vk::Image m_Image;
         vk::ImageView m_ImageView;
         vk::Semaphore m_RenderSemaphore;
@@ -50,34 +50,33 @@ struct GfxContext_VX {
     vk::CommandPool m_CommandPool;
     vk::CommandPool m_TempCommandPool;
     vx::CommandBuffer m_CommandBuffers[InFlightCount];
-    vk::DescriptorPool m_DescriptorPool;
     vk::Semaphore m_AcquireSemaphores[InFlightCount];
-    vk::Fence m_RenderFences[InFlightCount];
     vk::Semaphore m_TempSemaphore;
+    vk::Fence m_RenderFences[InFlightCount];
     vk::SwapchainKHR m_Swapchain;
-    vx::List<FrameResource> m_FrameResources;
+    vx::List<PresentResource> m_PresentResources;
     ImageAttachment m_DepthStencilImage;
 
     vk::Format m_SwapchainImageFormat = vk::Format::eB8G8R8A8Unorm;
     vk::Format m_DepthStencilImageFormat = vk::Format::eD24UnormS8Uint;
     vk::SampleCountFlagBits m_SampleCount = vk::SampleCountFlagBits::b1;
     vk::Extent2D m_FrameExtent;
-    uint32_t m_FrameNumber = 0;
-    uint32_t m_ImageIndex = 0;
+    uint32_t m_FrameIndex = 0;
+    uint32_t m_PresentIndex = 0;
     uint32_t m_QueueFamilyIndex = 0;
     bool m_RenderTargetOutdated = false;
 
-    void DestroyFrameResources();
+    void DestroyPresentResources();
 
     void Destroy();
 
-    const FrameResource& CurrentFrameResource() const {
-        return m_FrameResources[m_ImageIndex];
+    const PresentResource& CurrentPresentResource() const {
+        return m_PresentResources[m_PresentIndex];
     }
 
     void AcquireNextFrame() {
-        m_FrameNumber = (m_FrameNumber + 1) % InFlightCount;
-        check(m_Device.waitForFences(1, m_RenderFences + m_FrameNumber, true,
+        m_FrameIndex = (m_FrameIndex + 1) % InFlightCount;
+        check(m_Device.waitForFences(1, m_RenderFences + m_FrameIndex, true,
                                      UINT64_MAX));
     }
 
@@ -104,11 +103,15 @@ struct GfxContext_VX {
     void InitDevice(PhysicalDeviceInfo& physicalDeviceInfo,
                     vk::PhysicalDeviceFeatures2& features);
 
+    void InitAllocator();
+
+    void InitCommandBuffers();
+
     void InitSyncObjects();
 
     void BuildSwapchain(const vk::SurfaceCapabilitiesKHR& capabilities);
 
-    void BuildFrameResources();
+    void BuildPresentResources();
 
     void UpdateExtent(const vk::SurfaceCapabilitiesKHR& capabilities,
                       vk::Extent2D extent);
