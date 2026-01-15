@@ -254,8 +254,7 @@ private:
     CreateBufferResource(size_t size, vk::BufferUsageFlags usageFlags,
                          vma::AllocationInfo* allocInfo = nullptr);
 
-    TextureResource CreateTexture(vk::Extent2D extent,
-                                  vk::ImageUsageFlags usageFlags);
+    TextureResource CreateTexture(const vk::ImageCreateInfo& imageInfo);
 
     Rml::TextureHandle InitTexture(vk::Extent2D extent, vk::Buffer buffer);
     Rml::TextureHandle InitTexture(vk::Extent2D extent, const void* hostMemory);

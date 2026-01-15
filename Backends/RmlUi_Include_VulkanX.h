@@ -94,23 +94,27 @@ namespace vx {
     }
 
     struct Range3D {
-        vk::Offset3D min;
-        vk::Offset3D max;
+        vk::Offset3D offsets[2];
 
         Range3D() = default;
 
         Range3D(const vk::Extent3D& extent) noexcept
-            : max(extent.width, extent.height, extent.depth) {}
+            : offsets{vk::Offset3D(),
+                      vk::Offset3D(extent.width, extent.height, extent.depth)} {
+        }
 
         Range3D(const vk::Offset3D& min, const vk::Offset3D& max) noexcept
-            : min(min), max(max) {}
+            : offsets{vk::Offset3D(min), vk::Offset3D(max)} {}
 
         Range3D(const vk::Offset3D& min, const vk::Extent3D& extent) noexcept
-            : min(min), max(min.x + extent.width, min.y + extent.height,
-                            min.z + extent.depth) {}
+            : offsets{vk::Offset3D(min),
+                      vk::Offset3D(min.x + extent.width, min.y + extent.height,
+                                   min.z + extent.depth)} {}
 
         vk::Extent3D getExtent() const {
-            return vk::Extent3D(max.x - min.x, max.y - min.y, max.z - min.z);
+            return vk::Extent3D(offsets[1].x - offsets[0].x,
+                                offsets[1].y - offsets[0].y,
+                                offsets[1].z - offsets[0].z);
         }
 
         bool operator==(const Range3D&) const = default;
@@ -143,10 +147,6 @@ namespace vx {
         }
     };
 #endif
-
-    inline std::span<const vk::Offset3D, 2> toSpan(const Range3D& range) {
-        return std::span<const vk::Offset3D, 2>(&range.min, 2);
-    }
 
     inline vk::ImageSubresourceRange
     subresourceRange(vk::ImageAspectFlags aspectFlags,
@@ -592,7 +592,7 @@ namespace vx {
             vk::BufferImageCopy copyRegion;
             copyRegion.setBufferOffset(srcBuffer.m_offset);
             copyRegion.setImageSubresource(subresource);
-            copyRegion.setImageOffset(dstRegion.min);
+            copyRegion.setImageOffset(dstRegion.offsets[0]);
             copyRegion.setImageExtent(dstRegion.getExtent());
             copyRegion.setBufferRowLength(rowLength);
             copyRegion.setBufferImageHeight(imageHeight);
@@ -614,9 +614,9 @@ namespace vx {
 
             vk::ImageCopy2 imageCopy;
             imageCopy.setSrcSubresource(subresource);
-            imageCopy.setSrcOffset(srcRegion.min);
+            imageCopy.setSrcOffset(srcRegion.offsets[0]);
             imageCopy.setDstSubresource(subresource);
-            imageCopy.setDstOffset(dstRegion.min);
+            imageCopy.setDstOffset(dstRegion.offsets[0]);
             imageCopy.setExtent(extent);
 
             vk::CopyImageInfo2 copyImageInfo;
@@ -637,9 +637,9 @@ namespace vx {
                           vk::Filter filter = vk::Filter::eLinear) const {
             vk::ImageBlit2 imageBlit;
             imageBlit.setSrcSubresource(subresource);
-            imageBlit.setSrcOffsets(toSpan(srcRegion));
+            imageBlit.setSrcOffsets(srcRegion.offsets);
             imageBlit.setDstSubresource(subresource);
-            imageBlit.setDstOffsets(toSpan(dstRegion));
+            imageBlit.setDstOffsets(dstRegion.offsets);
 
             vk::BlitImageInfo2 blitImageInfo;
             blitImageInfo.setSrcImage(srcImage);
@@ -1141,7 +1141,7 @@ namespace vx {
 
             vk::MemoryToImageCopy copyRegion;
             copyRegion.setHostPointer(hostMemory);
-            copyRegion.setImageOffset(range.min);
+            copyRegion.setImageOffset(range.offsets[0]);
             copyRegion.setImageExtent(range.getExtent());
             copyRegion.setImageSubresource(subresource);
             copyRegion.setMemoryRowLength(rowLength);

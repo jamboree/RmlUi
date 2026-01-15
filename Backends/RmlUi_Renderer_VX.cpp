@@ -1248,25 +1248,10 @@ void Renderer_VX::PopLayer() {
 }
 
 Rml::TextureHandle Renderer_VX::SaveLayerAsTexture() {
-    TextureResource t;
-    {
-        const auto imageInfo = vx::image2DCreateInfo(
-            m_Gfx->m_SwapchainImageFormat, m_Scissor.getExtent(),
-            vk::ImageUsageFlagBits::bSampled |
-                vk::ImageUsageFlagBits::bTransferDst);
-
-        vma::AllocationCreateInfo allocationInfo;
-        allocationInfo.setUsage(vma::MemoryUsage::eAutoPreferDevice);
-
-        t.m_Image = m_Gfx->m_Allocator
-                        .createImage(imageInfo, allocationInfo, &t.m_Allocation)
-                        .get();
-
-        const auto imageViewInfo = vx::imageViewCreateInfo(
-            vk::ImageViewType::e2D, t.m_Image, imageInfo.getFormat(),
-            vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
-        t.m_ImageView = m_Gfx->m_Device.createImageView(imageViewInfo).get();
-    }
+    const auto t = CreateTexture(vx::image2DCreateInfo(
+        m_Gfx->m_SwapchainImageFormat, m_Scissor.getExtent(),
+        vk::ImageUsageFlagBits::bSampled |
+            vk::ImageUsageFlagBits::bTransferDst));
 
     EndLayerRendering();
 
@@ -1567,32 +1552,19 @@ void Renderer_VX::InitPipelines(
     vk::PipelineRenderingCreateInfo& renderingInfo) {
     const auto device = m_Gfx->m_Device;
 
-    const auto clipVertShader =
-        device.createShaderModule(shader_vert_clip).get();
-    const auto mainVertShader =
-        device.createShaderModule(shader_vert_main).get();
-    const auto passthroughVertShader =
-        device.createShaderModule(shader_vert_passthrough).get();
-    const auto blurVertShader =
-        device.createShaderModule(shader_vert_blur).get();
-    const auto colorFragShader =
-        device.createShaderModule(shader_frag_color).get();
-    const auto textureFragShader =
-        device.createShaderModule(shader_frag_texture).get();
-    const auto gradientFragShader =
-        device.createShaderModule(shader_frag_gradient).get();
-    const auto passthroughFragShader =
-        device.createShaderModule(shader_frag_passthrough).get();
-    const auto blurFragShader =
-        device.createShaderModule(shader_frag_blur).get();
-    const auto colorMatrixFragShader =
-        device.createShaderModule(shader_frag_color_matrix).get();
-    const auto blendMaskFragShader =
-        device.createShaderModule(shader_frag_blend_mask).get();
-    const auto dropShadowFragShader =
-        device.createShaderModule(shader_frag_drop_shadow).get();
-    const auto creationFragShader =
-        device.createShaderModule(shader_frag_creation).get();
+    auto clipVertShader = vx::shaderModuleInfo(shader_vert_clip);
+    auto mainVertShader = vx::shaderModuleInfo(shader_vert_main);
+    auto passthroughVertShader = vx::shaderModuleInfo(shader_vert_passthrough);
+    auto blurVertShader = vx::shaderModuleInfo(shader_vert_blur);
+    auto colorFragShader = vx::shaderModuleInfo(shader_frag_color);
+    auto textureFragShader = vx::shaderModuleInfo(shader_frag_texture);
+    auto gradientFragShader = vx::shaderModuleInfo(shader_frag_gradient);
+    auto passthroughFragShader = vx::shaderModuleInfo(shader_frag_passthrough);
+    auto blurFragShader = vx::shaderModuleInfo(shader_frag_blur);
+    auto colorMatrixFragShader = vx::shaderModuleInfo(shader_frag_color_matrix);
+    auto blendMaskFragShader = vx::shaderModuleInfo(shader_frag_blend_mask);
+    auto dropShadowFragShader = vx::shaderModuleInfo(shader_frag_drop_shadow);
+    auto creationFragShader = vx::shaderModuleInfo(shader_frag_creation);
 
     vx::GraphicsPipelineBuilder pipelineBuilder;
     pipelineBuilder.attach(renderingInfo);
@@ -1642,7 +1614,7 @@ void Renderer_VX::InitPipelines(
     pipelineBuilder.setVertexAttributeDescriptionCount(1);
 
     pipelineBuilder.setLayout(m_PrimaryPipelineLayout);
-    shaderStageInfos[0].setModule(clipVertShader);
+    shaderStageInfos[0].attachHead(clipVertShader);
 
     m_ClipPipeline = pipelineBuilder.build(device).get();
 
@@ -1676,21 +1648,21 @@ void Renderer_VX::InitPipelines(
     vertexAttributeDescriptions[2].setOffset(offsetof(Rml::Vertex, tex_coord));
     pipelineBuilder.setVertexAttributeDescriptionCount(3);
 
-    shaderStageInfos[0].setModule(mainVertShader);
-    shaderStageInfos[1].setModule(colorFragShader);
+    shaderStageInfos[0].attachHead(mainVertShader);
+    shaderStageInfos[1].attachHead(colorFragShader);
 
     m_ColorPipeline = pipelineBuilder.build(device).get();
 
-    shaderStageInfos[1].setModule(creationFragShader);
+    shaderStageInfos[1].attachHead(creationFragShader);
 
     m_CreationPipeline = pipelineBuilder.build(device).get();
 
     pipelineBuilder.setLayout(m_GradientPipelineLayout);
-    shaderStageInfos[1].setModule(gradientFragShader);
+    shaderStageInfos[1].attachHead(gradientFragShader);
     m_GradientPipeline = pipelineBuilder.build(device).get();
 
     pipelineBuilder.setLayout(m_TexturePipelineLayout);
-    shaderStageInfos[1].setModule(textureFragShader);
+    shaderStageInfos[1].attachHead(textureFragShader);
 
     m_TexturePipeline = pipelineBuilder.build(device).get();
 
@@ -1707,8 +1679,8 @@ void Renderer_VX::InitPipelines(
     vertexAttributeDescriptions[1].setOffset(offsetof(Rml::Vertex, tex_coord));
     pipelineBuilder.setVertexAttributeDescriptionCount(2);
 
-    shaderStageInfos[0].setModule(passthroughVertShader);
-    shaderStageInfos[1].setModule(passthroughFragShader);
+    shaderStageInfos[0].attachHead(passthroughVertShader);
+    shaderStageInfos[1].attachHead(passthroughFragShader);
 
     if (m_Gfx->m_SampleCount != vk::SampleCountFlagBits::b1) {
         m_MsPassthroughPipeline = pipelineBuilder.build(device).get();
@@ -1720,36 +1692,22 @@ void Renderer_VX::InitPipelines(
     pipelineBuilder.setDynamicStateCount(4);
     pipelineBuilder.setBlendEnable(false);
 
-    shaderStageInfos[1].setModule(colorMatrixFragShader);
+    shaderStageInfos[1].attachHead(colorMatrixFragShader);
 
     m_ColorMatrixPipeline = pipelineBuilder.build(device).get();
 
-    shaderStageInfos[1].setModule(blendMaskFragShader);
+    shaderStageInfos[1].attachHead(blendMaskFragShader);
 
     m_BlendMaskPipeline = pipelineBuilder.build(device).get();
 
-    shaderStageInfos[1].setModule(dropShadowFragShader);
+    shaderStageInfos[1].attachHead(dropShadowFragShader);
 
     m_DropShadowPipeline = pipelineBuilder.build(device).get();
 
-    shaderStageInfos[0].setModule(blurVertShader);
-    shaderStageInfos[1].setModule(blurFragShader);
+    shaderStageInfos[0].attachHead(blurVertShader);
+    shaderStageInfos[1].attachHead(blurFragShader);
 
     m_BlurPipeline = pipelineBuilder.build(device).get();
-
-    device.destroyShaderModule(clipVertShader);
-    device.destroyShaderModule(mainVertShader);
-    device.destroyShaderModule(passthroughVertShader);
-    device.destroyShaderModule(blurVertShader);
-    device.destroyShaderModule(colorFragShader);
-    device.destroyShaderModule(textureFragShader);
-    device.destroyShaderModule(gradientFragShader);
-    device.destroyShaderModule(passthroughFragShader);
-    device.destroyShaderModule(blurFragShader);
-    device.destroyShaderModule(colorMatrixFragShader);
-    device.destroyShaderModule(blendMaskFragShader);
-    device.destroyShaderModule(dropShadowFragShader);
-    device.destroyShaderModule(creationFragShader);
 
 #ifndef NDEBUG
     device.setDebugUtilsObjectNameEXT(m_ClipPipeline, "m_ClipPipeline");
@@ -1794,13 +1752,8 @@ Renderer_VX::CreateBufferResource(size_t size, vk::BufferUsageFlags usageFlags,
 }
 
 Renderer_VX::TextureResource
-Renderer_VX::CreateTexture(vk::Extent2D extent,
-                           vk::ImageUsageFlags usageFlags) {
+Renderer_VX::CreateTexture(const vk::ImageCreateInfo& imageInfo) {
     TextureResource t;
-
-    const auto imageInfo =
-        vx::image2DCreateInfo(vk::Format::eR8G8B8A8Unorm, extent,
-                              vk::ImageUsageFlagBits::bSampled | usageFlags);
 
     vma::AllocationCreateInfo allocationInfo;
     allocationInfo.setUsage(vma::MemoryUsage::eAutoPreferDevice);
@@ -1819,26 +1772,24 @@ Renderer_VX::CreateTexture(vk::Extent2D extent,
 
 Rml::TextureHandle Renderer_VX::InitTexture(vk::Extent2D extent,
                                             vk::Buffer buffer) {
-    const auto t = CreateTexture(extent, vk::ImageUsageFlagBits::bTransferDst);
+    const auto t = CreateTexture(
+        vx::image2DCreateInfo(vk::Format::eR8G8B8A8Unorm, extent,
+                              vk::ImageUsageFlagBits::bSampled |
+                                  vk::ImageUsageFlagBits::bTransferDst));
 
     const auto commandBuffer = m_Gfx->BeginTemp();
 
     vx::ImageMemoryBarrierState imageMemoryBarrier;
     imageMemoryBarrier.init(
         t.m_Image, vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
-
     imageMemoryBarrier.setNewLayout(vk::ImageLayout::eTransferDstOptimal);
     imageMemoryBarrier.setDstStageAccess(vk::PipelineStageFlagBits2::bCopy,
                                          vk::AccessFlagBits2::bTransferWrite);
     commandBuffer.cmdPipelineBarriers(imageMemoryBarrier);
 
-    vk::BufferImageCopy bufferImageCopy;
-    bufferImageCopy.setImageSubresource(
-        vx::subresourceLayers(vk::ImageAspectFlagBits::bColor, 1));
-    bufferImageCopy.setImageExtent(vx::toExtent3D(extent));
-    commandBuffer.cmdCopyBufferToImage(buffer, t.m_Image,
-                                       vk::ImageLayout::eTransferDstOptimal, 1,
-                                       &bufferImageCopy);
+    commandBuffer.cmdCopyImageFromBuffer(
+        t.m_Image, vx::toExtent3D(extent), imageMemoryBarrier.getNewLayout(),
+        vx::subresourceLayers(vk::ImageAspectFlagBits::bColor, 1), buffer);
 
     imageMemoryBarrier.updateLayout(vk::ImageLayout::eShaderReadOnlyOptimal);
     imageMemoryBarrier.updateStageAccess(
@@ -1853,8 +1804,10 @@ Rml::TextureHandle Renderer_VX::InitTexture(vk::Extent2D extent,
 
 Rml::TextureHandle Renderer_VX::InitTexture(vk::Extent2D extent,
                                             const void* hostMemory) {
-    const auto t =
-        CreateTexture(extent, vk::ImageUsageFlagBits::bHostTransferEXT);
+    const auto t = CreateTexture(
+        vx::image2DCreateInfo(vk::Format::eR8G8B8A8Unorm, extent,
+                              vk::ImageUsageFlagBits::bSampled |
+                                  vk::ImageUsageFlagBits::bHostTransferEXT));
 
     vk::HostImageLayoutTransitionInfoEXT transitionInfo;
     transitionInfo.setImage(t.m_Image);
@@ -2165,12 +2118,13 @@ void Renderer_VX::RenderBlur(float sigma, const unsigned (&postprocess)[2]) {
     // to do the above first. Note that this strategy may sometimes result in
     // visible seams. Alternatively, we could try to enlarge the window to the
     // next power-of-two size and then downsample and blur that.
-    const auto scale = 1 << pass_level;
     const vx::Range3D targetRegion(
-        vk::Offset3D(srcRegion.min.x * scale, srcRegion.min.y * scale,
-                     srcRegion.min.z),
-        vk::Offset3D(srcRegion.max.x * scale, srcRegion.max.y * scale,
-                     srcRegion.max.z));
+        vk::Offset3D(srcRegion.offsets[0].x << pass_level,
+                     srcRegion.offsets[0].y << pass_level,
+                     srcRegion.offsets[0].z),
+        vk::Offset3D(srcRegion.offsets[1].x << pass_level,
+                     srcRegion.offsets[1].y << pass_level,
+                     srcRegion.offsets[1].z));
     if (dstRegion != targetRegion) {
         m_CommandBuffer.cmdBlitImage(
             srcImageBarrier.getImage(), srcRegion,
