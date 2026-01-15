@@ -249,9 +249,9 @@ struct BackendContext {
     }
 
     void BeginFrame() {
-        m_Gfx.AcquireNextFrame();
-        m_Renderer.ReleaseFrame(m_Gfx.m_FrameIndex);
-        if (m_Gfx.InitFrame()) {
+        m_Gfx.WaitNextFrame();
+        m_Renderer.ResetFrame(m_Gfx.m_FrameIndex);
+        if (!m_Gfx.AcquireRenderTarget()) {
             m_Gfx.RecreateRenderTarget(m_FrameExtent);
             m_Renderer.ResetRenderTarget();
         }

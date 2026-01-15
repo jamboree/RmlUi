@@ -1,6 +1,7 @@
 #include "RmlUi_Backend.h"
 #define UNICODE
 #include "RmlUi_GfxContext_VX.h"
+#include "RmlUi_Renderer_VX.h"
 #include "RmlUi_Platform_Win32.h"
 #include <RmlUi/Config/Config.h>
 #include <RmlUi/Core/Context.h>
@@ -70,6 +71,7 @@ static void WaitEvents() {
 struct BackendContext {
     std::optional<SystemInterface_Win32> m_System;
     GfxContext_VX m_Gfx;
+    Renderer_VX m_Renderer;
     TextInputMethodEditor_Win32 m_TextIme;
 
     HINSTANCE m_InstanceHnd = nullptr;
@@ -129,6 +131,12 @@ struct BackendContext {
         m_WindowSize.x = width;
         m_WindowSize.y = height;
         m_Gfx.InitRenderTarget(GetFrameExtent());
+
+        if (!m_Renderer.Init(m_Gfx)) {
+            Rml::Log::Message(Rml::Log::LT_ERROR,
+                              "Failed to initialize Vulkan render interface");
+            return false;
+        }
 
         m_System->SetWindow(m_WindowHnd);
 
@@ -311,6 +319,7 @@ struct BackendContext {
         if (Rml::GetTextInputHandler() == &m_TextIme)
             Rml::SetTextInputHandler(nullptr);
 
+        m_Renderer.Destroy();
         m_Gfx.Destroy();
         ::DestroyWindow(m_WindowHnd);
         ::UnregisterClassW((LPCWSTR)m_InstanceName.data(), m_InstanceHnd);
@@ -343,7 +352,7 @@ struct BackendContext {
             if (m_WindowSize.x) {
                 if (m_Gfx.m_RenderTargetOutdated) {
                     m_Gfx.RecreateRenderTarget(GetFrameExtent());
-                    m_Gfx.m_RenderTargetOutdated = false;
+                    m_Renderer.ResetRenderTarget();
                 }
                 break;
             }
@@ -354,6 +363,22 @@ struct BackendContext {
         m_KeyDownCallback = nullptr;
 
         return m_Running;
+    }
+
+    void BeginFrame() {
+        m_Gfx.WaitNextFrame();
+        m_Renderer.ResetFrame(m_Gfx.m_FrameIndex);
+        if (!m_Gfx.AcquireRenderTarget()) {
+            m_Gfx.RecreateRenderTarget(GetFrameExtent());
+            m_Renderer.ResetRenderTarget();
+        }
+        auto commandBuffer = m_Gfx.BeginFrame();
+        m_Renderer.BeginFrame(commandBuffer);
+    }
+
+    void EndFrame() {
+        m_Renderer.EndFrame();
+        m_Gfx.EndFrame();
     }
 };
 
@@ -379,7 +404,7 @@ Rml::SystemInterface* Backend::GetSystemInterface() {
 }
 
 Rml::RenderInterface* Backend::GetRenderInterface() {
-    return &g_BackendContext.m_Gfx.m_Renderer;
+    return &g_BackendContext.m_Renderer;
 }
 
 bool Backend::ProcessEvents(Rml::Context* context,
@@ -392,12 +417,10 @@ bool Backend::ProcessEvents(Rml::Context* context,
 
 void Backend::RequestExit() { g_BackendContext.m_Running = false; }
 
-void Backend::BeginFrame() {
-    g_BackendContext.m_Gfx.BeginFrame(g_BackendContext.GetFrameExtent());
-}
+void Backend::BeginFrame() { g_BackendContext.BeginFrame(); }
 
 void Backend::PresentFrame() {
-    g_BackendContext.m_Gfx.EndFrame();
+    g_BackendContext.EndFrame();
 
     // Optional, used to mark frames during performance profiling.
     RMLUI_FrameMark;

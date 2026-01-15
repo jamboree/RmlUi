@@ -589,17 +589,16 @@ namespace vx {
                                const vk::ImageSubresourceLayers& subresource,
                                BufferOffset srcBuffer, uint32_t rowLength = 0,
                                uint32_t imageHeight = 0) const {
-            vk::BufferImageCopy bufferImageCopy;
-            bufferImageCopy.setBufferOffset(srcBuffer.m_offset);
-            bufferImageCopy.setImageSubresource(subresource);
-            bufferImageCopy.setImageOffset(dstRegion.min);
-            bufferImageCopy.setImageExtent(dstRegion.getExtent());
-            bufferImageCopy.setBufferRowLength(rowLength);
-            bufferImageCopy.setBufferImageHeight(imageHeight);
+            vk::BufferImageCopy copyRegion;
+            copyRegion.setBufferOffset(srcBuffer.m_offset);
+            copyRegion.setImageSubresource(subresource);
+            copyRegion.setImageOffset(dstRegion.min);
+            copyRegion.setImageExtent(dstRegion.getExtent());
+            copyRegion.setBufferRowLength(rowLength);
+            copyRegion.setBufferImageHeight(imageHeight);
 
-            vk::CommandBuffer::cmdCopyBufferToImage(srcBuffer.m_buffer,
-                                                    dstImage, dstImageLayout, 1,
-                                                    &bufferImageCopy);
+            vk::CommandBuffer::cmdCopyBufferToImage(
+                srcBuffer.m_buffer, dstImage, dstImageLayout, 1, &copyRegion);
         }
 
         void cmdCopyImage(vk::Image srcImage, const Range3D& srcRegion,
@@ -1140,15 +1139,15 @@ namespace vx {
             copyInfo.setDstImage(image);
             copyInfo.setDstImageLayout(imageLayout);
 
-            vk::MemoryToImageCopy region;
-            region.setHostPointer(hostMemory);
-            region.setImageOffset(range.min);
-            region.setImageExtent(range.getExtent());
-            region.setImageSubresource(subresource);
-            region.setMemoryRowLength(rowLength);
-            region.setMemoryImageHeight(imageHeight);
+            vk::MemoryToImageCopy copyRegion;
+            copyRegion.setHostPointer(hostMemory);
+            copyRegion.setImageOffset(range.min);
+            copyRegion.setImageExtent(range.getExtent());
+            copyRegion.setImageSubresource(subresource);
+            copyRegion.setMemoryRowLength(rowLength);
+            copyRegion.setMemoryImageHeight(imageHeight);
             copyInfo.setRegionCount(1);
-            copyInfo.setRegions(&region);
+            copyInfo.setRegions(&copyRegion);
 
             return vk::Device::copyMemoryToImageEXT(copyInfo);
         }

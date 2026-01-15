@@ -210,16 +210,14 @@ struct Renderer_VX::FrameResource {
 struct Renderer_VX::PrimaryDescriptorSet {
     static constexpr auto Vert = vk::ShaderStageFlagBits::bVertex;
     static constexpr auto Frag = vk::ShaderStageFlagBits::bFragment;
-    static constexpr auto UpdateAfterBind =
-        vk::DescriptorBindingFlagBits::bUpdateAfterBind;
-    static constexpr auto PartiallyBound =
+    static constexpr auto BindingFlags =
+        vk::DescriptorBindingFlagBits::bUpdateAfterBind |
         vk::DescriptorBindingFlagBits::bPartiallyBound;
 
-    VX_BINDING(0, vx::StorageBufferDescriptor, Vert | Frag, UpdateAfterBind)
+    VX_BINDING(0, vx::StorageBufferDescriptor, Vert | Frag, BindingFlags)
     matrices;
     VX_BINDING(1, vx::ImmutableSamplerDescriptor<0>, Frag) mySampler;
-    VX_BINDING(2, vx::SampledImageDescriptor[4], Frag,
-               UpdateAfterBind | PartiallyBound)
+    VX_BINDING(2, vx::SampledImageDescriptor[4], Frag, BindingFlags)
     textures;
 };
 
@@ -366,7 +364,7 @@ void Renderer_VX::Destroy() {
     ReleaseAllResourceUse((2u << GfxContext_VX::InFlightCount) - 2u);
     for (auto& frameResource :
          std::span(m_FrameResources.get(), GfxContext_VX::InFlightCount)) {
-        ReleaseFrameResource(frameResource);
+        ResetFrameResource(frameResource);
     }
 
     m_SurfaceManager.Destroy(*m_Gfx);
@@ -454,6 +452,7 @@ void Renderer_VX::BeginFrame(vx::CommandBuffer commandBuffer) {
     m_Matrices.clear();
     m_StencilRef = 1;
     m_PostprocessIndex = 0;
+    m_PostprocessMask = 0;
     m_EnableScissor = false;
     m_EnableClipMask = false;
     m_LayerRendering = false;
@@ -490,23 +489,24 @@ void Renderer_VX::EndFrame() {
     auto& frameResource = m_FrameResources[m_Gfx->m_FrameIndex];
 
     EndLayerRendering();
-    ResolveLayer(0, m_Gfx->CurrentPresentResource().m_Image);
+    ResolveLayer(0, m_Gfx->CurrentRenderResource().m_Image);
     m_SurfaceManager.PopLayer();
 
-    const auto size = m_Matrices.size() * sizeof(Rml::Matrix4f);
-    vma::AllocationInfo allocInfo;
-    frameResource.m_StorageBuffer = CreateBufferResource(
-        size, vk::BufferUsageFlagBits::bStorageBuffer, &allocInfo);
-    std::memcpy(allocInfo.getMappedData(), m_Matrices.data(), size);
+    if (const auto size = m_Matrices.size() * sizeof(Rml::Matrix4f)) {
+        vma::AllocationInfo allocInfo;
+        frameResource.m_StorageBuffer = CreateBufferResource(
+            size, vk::BufferUsageFlagBits::bStorageBuffer, &allocInfo);
+        std::memcpy(allocInfo.getMappedData(), m_Matrices.data(), size);
 
-    m_Gfx->m_Device.updateDescriptorSets(
-        {frameResource.m_PrimaryDescriptorSet->matrices =
-             frameResource.m_StorageBuffer.m_Buffer});
+        m_Gfx->m_Device.updateDescriptorSets(
+            {frameResource.m_PrimaryDescriptorSet->matrices =
+                 frameResource.m_StorageBuffer.m_Buffer});
+    }
 }
 
-void Renderer_VX::ReleaseFrame(unsigned frameNumber) {
+void Renderer_VX::ResetFrame(unsigned frameNumber) {
     ReleaseAllResourceUse(2u << frameNumber);
-    ReleaseFrameResource(m_FrameResources[frameNumber]);
+    ResetFrameResource(m_FrameResources[frameNumber]);
 }
 
 Rml::CompiledGeometryHandle
@@ -548,9 +548,8 @@ void Renderer_VX::ReleaseAllResourceUse(uint8_t useFlags) {
     m_BufferResources.ReleaseAllUse(*this, useFlags);
 }
 
-void Renderer_VX::DestroyResource(BufferResource& b) {
-    const auto allocator = m_Gfx->m_Allocator;
-    allocator.destroyBuffer(b.m_Buffer, b.m_Allocation);
+void Renderer_VX::DestroyResource(const BufferResource& b) {
+    m_Gfx->m_Allocator.destroyBuffer(b.m_Buffer, b.m_Allocation);
 }
 
 void Renderer_VX::ReleaseGeometry(Rml::CompiledGeometryHandle geometry) {
@@ -615,58 +614,68 @@ Rml::TextureHandle Renderer_VX::LoadTexture(Rml::Vector2i& texture_dimensions,
         return false;
     }
 
-    auto image_src = buffer.get() + sizeof(TGAHeader);
-    StagingBuffer stagingBuffer{m_Gfx->m_Allocator};
-
-    auto image_dest = static_cast<uint8_t*>(stagingBuffer.Alloc(image_size));
-
-    const bool topDown = header.imageDescriptor & 32;
-    auto srcRowStep = header.width * color_mode;
-    if (!topDown) {
-        image_src += (header.height - 1) * srcRowStep;
-        srcRowStep = -srcRowStep;
-    }
-
-    // Targa is BGR, swap to RGB, flip Y axis, and convert to premultiplied
-    // alpha.
-    for (int y = 0; y < header.height; ++y) {
-        auto src = image_src;
-        for (int x = 0; x < header.width; ++x) {
-            uint8_t rgba[4] = {src[2], src[1], src[0], 255};
-            if (color_mode == 4) {
-                const auto alpha = src[3];
-                for (int i = 0; i != 3; ++i) {
-                    rgba[i] = uint8_t((rgba[i] * alpha) / 255);
-                }
-                rgba[3] = alpha;
-            }
-            std::memcpy(image_dest, rgba, 4);
-            image_dest += 4;
-            src += color_mode;
+    const auto loadImage = [&](uint8_t* image_dest) {
+        auto image_src = buffer.get() + sizeof(TGAHeader);
+        const bool topDown = header.imageDescriptor & 32;
+        auto srcRowStep = header.width * color_mode;
+        if (!topDown) {
+            image_src += (header.height - 1) * srcRowStep;
+            srcRowStep = -srcRowStep;
         }
-        image_src += srcRowStep;
-    }
+
+        // Targa is BGR, swap to RGB, flip Y axis, and convert to premultiplied
+        // alpha.
+        for (int y = 0; y < header.height; ++y) {
+            auto src = image_src;
+            for (int x = 0; x < header.width; ++x) {
+                uint8_t rgba[4] = {src[2], src[1], src[0], 255};
+                if (color_mode == 4) {
+                    const auto alpha = src[3];
+                    for (int i = 0; i != 3; ++i) {
+                        rgba[i] = uint8_t((rgba[i] * alpha) / 255);
+                    }
+                    rgba[3] = alpha;
+                }
+                std::memcpy(image_dest, rgba, 4);
+                image_dest += 4;
+                src += color_mode;
+            }
+            image_src += srcRowStep;
+        }
+    };
 
     texture_dimensions.x = header.width;
     texture_dimensions.y = header.height;
 
-    return CreateTexture(stagingBuffer.m_Buffer, texture_dimensions);
+    const vk::Extent2D extent(texture_dimensions.x, texture_dimensions.y);
+    if (m_Gfx->m_HasHostImageCopy) {
+        std::unique_ptr<uint8_t[]> imageData(new uint8_t[image_size]);
+        loadImage(imageData.get());
+        return InitTexture(extent, imageData.get());
+    } else {
+        StagingBuffer stagingBuffer{m_Gfx->m_Allocator};
+        loadImage(static_cast<uint8_t*>(stagingBuffer.Alloc(image_size)));
+        return InitTexture(extent, stagingBuffer.m_Buffer);
+    }
 }
 
 Rml::TextureHandle
 Renderer_VX::GenerateTexture(Rml::Span<const Rml::byte> source_data,
                              Rml::Vector2i source_dimensions) {
-    StagingBuffer stagingBuffer{m_Gfx->m_Allocator};
-    std::memcpy(stagingBuffer.Alloc(source_data.size()), source_data.data(),
-                source_data.size());
-    return CreateTexture(stagingBuffer.m_Buffer, source_dimensions);
+    const vk::Extent2D extent(source_dimensions.x, source_dimensions.y);
+    if (m_Gfx->m_HasHostImageCopy) {
+        return InitTexture(extent, source_data.data());
+    } else {
+        StagingBuffer stagingBuffer{m_Gfx->m_Allocator};
+        std::memcpy(stagingBuffer.Alloc(source_data.size()), source_data.data(),
+                    source_data.size());
+        return InitTexture(extent, stagingBuffer.m_Buffer);
+    }
 }
 
-void Renderer_VX::DestroyResource(TextureResource& t) {
-    const auto device = m_Gfx->m_Device;
-    const auto allocator = m_Gfx->m_Allocator;
-    device.destroyImageView(t.m_ImageView);
-    allocator.destroyImage(t.m_Image, t.m_Allocation);
+void Renderer_VX::DestroyResource(const TextureResource& t) {
+    m_Gfx->m_Device.destroyImageView(t.m_ImageView);
+    m_Gfx->m_Allocator.destroyImage(t.m_Image, t.m_Allocation);
 }
 
 void Renderer_VX::ReleaseTexture(Rml::TextureHandle texture) {
@@ -1011,6 +1020,9 @@ const ImageAttachment& Renderer_VX::GetPostprocess(unsigned index) {
                 vk::ImageUsageFlagBits::bTransferSrc |
                 vk::ImageUsageFlagBits::bTransferDst,
             vk::ImageAspectFlagBits::bColor, vk::SampleCountFlagBits::b1);
+    }
+    if (const auto flag = 1u << index; !(m_PostprocessMask & flag)) {
+        m_PostprocessMask |= flag;
         const auto& frameResource = m_FrameResources[m_Gfx->m_FrameIndex];
         m_Gfx->m_Device.updateDescriptorSets(
             {frameResource.m_PrimaryDescriptorSet->textures[index] =
@@ -1104,11 +1116,10 @@ void Renderer_VX::ResolveLayer(Rml::LayerHandle source, vk::Image dstImage) {
     srcImageBarrier.init(m_SurfaceManager.GetLayer(source).m_Image,
                          vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
     layerState.SetImageBarrierSrc(srcImageBarrier);
-    layerState.m_State = LayerState::Transfer;
     srcImageBarrier.setNewLayout(vk::ImageLayout::eTransferSrcOptimal);
-
     srcImageBarrier.setDstStageAccess(vk::PipelineStageFlagBits2::bTransfer,
                                       vk::AccessFlagBits2::bTransferRead);
+    layerState.m_State = LayerState::Transfer;
 
     dstImageBarrier.init(dstImage,
                          vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
@@ -1782,24 +1793,33 @@ Renderer_VX::CreateBufferResource(size_t size, vk::BufferUsageFlags usageFlags,
     return b;
 }
 
-Rml::TextureHandle Renderer_VX::CreateTexture(vk::Buffer buffer,
-                                              Rml::Vector2i dimensions) {
-    const auto device = m_Gfx->m_Device;
-    const auto allocator = m_Gfx->m_Allocator;
-
+Renderer_VX::TextureResource
+Renderer_VX::CreateTexture(vk::Extent2D extent,
+                           vk::ImageUsageFlags usageFlags) {
     TextureResource t;
 
-    const vk::Extent2D extent(dimensions.x, dimensions.y);
     const auto imageInfo =
         vx::image2DCreateInfo(vk::Format::eR8G8B8A8Unorm, extent,
-                              vk::ImageUsageFlagBits::bSampled |
-                                  vk::ImageUsageFlagBits::bTransferDst);
+                              vk::ImageUsageFlagBits::bSampled | usageFlags);
 
     vma::AllocationCreateInfo allocationInfo;
     allocationInfo.setUsage(vma::MemoryUsage::eAutoPreferDevice);
 
-    t.m_Image =
-        allocator.createImage(imageInfo, allocationInfo, &t.m_Allocation).get();
+    t.m_Image = m_Gfx->m_Allocator
+                    .createImage(imageInfo, allocationInfo, &t.m_Allocation)
+                    .get();
+
+    const auto imageViewInfo = vx::imageViewCreateInfo(
+        vk::ImageViewType::e2D, t.m_Image, imageInfo.getFormat(),
+        vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
+    t.m_ImageView = m_Gfx->m_Device.createImageView(imageViewInfo).get();
+
+    return t;
+}
+
+Rml::TextureHandle Renderer_VX::InitTexture(vk::Extent2D extent,
+                                            vk::Buffer buffer) {
+    const auto t = CreateTexture(extent, vk::ImageUsageFlagBits::bTransferDst);
 
     const auto commandBuffer = m_Gfx->BeginTemp();
 
@@ -1828,10 +1848,25 @@ Rml::TextureHandle Renderer_VX::CreateTexture(vk::Buffer buffer,
 
     m_Gfx->EndTemp(commandBuffer);
 
-    const auto imageViewInfo = vx::imageViewCreateInfo(
-        vk::ImageViewType::e2D, t.m_Image, imageInfo.getFormat(),
+    return ~m_TextureResources.Create(t);
+}
+
+Rml::TextureHandle Renderer_VX::InitTexture(vk::Extent2D extent,
+                                            const void* hostMemory) {
+    const auto t =
+        CreateTexture(extent, vk::ImageUsageFlagBits::bHostTransferEXT);
+
+    vk::HostImageLayoutTransitionInfoEXT transitionInfo;
+    transitionInfo.setImage(t.m_Image);
+    transitionInfo.setNewLayout(vk::ImageLayout::eShaderReadOnlyOptimal);
+    transitionInfo.setSubresourceRange(
         vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
-    t.m_ImageView = device.createImageView(imageViewInfo).get();
+
+    m_Gfx->m_Device.transitionImageLayoutEXT(1, &transitionInfo);
+
+    m_Gfx->m_Device.copyImageFromMemoryEXT(
+        t.m_Image, vx::toExtent3D(extent), transitionInfo.getNewLayout(),
+        vx::subresourceLayers(vk::ImageAspectFlagBits::bColor, 1), hostMemory);
 
     return ~m_TextureResources.Create(t);
 }
@@ -1861,9 +1896,10 @@ Renderer_VX::CreateGeometry(Rml::Span<const Rml::Vertex> vertices,
     return g;
 }
 
-void Renderer_VX::ReleaseFrameResource(FrameResource& frameResource) {
+void Renderer_VX::ResetFrameResource(FrameResource& frameResource) {
     if (frameResource.m_StorageBuffer.m_Buffer) {
         DestroyResource(frameResource.m_StorageBuffer);
+        frameResource.m_StorageBuffer = {};
     }
 }
 

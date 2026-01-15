@@ -2,44 +2,23 @@
 #include <RmlUi/Core/Log.h>
 #include <algorithm>
 
-bool PhysicalDeviceInfo::Init(vx::PhysicalDevice physicalDevice) {
-    physicalDevice.getProperties(&m_Properties);
-    m_QueueFamilyProperties = physicalDevice.getQueueFamilyProperties();
-    if (!physicalDevice.enumerateDeviceExtensionProperties().extract(
-            m_ExtensionProperties)) {
-        return false;
-    }
-    std::ranges::sort(m_ExtensionProperties, std::ranges::less{},
-                      [](const vk::ExtensionProperties& props) {
-                          return props.getExtensionName();
-                      });
-    return true;
-}
-
-bool PhysicalDeviceInfo::HasExtension(std::string_view name) const noexcept {
-    const auto it = std::ranges::lower_bound(
-        m_ExtensionProperties, name, std::ranges::less{},
-        [](const vk::ExtensionProperties& props) {
-            return props.getExtensionName();
-        });
-    return it != m_ExtensionProperties.end() && it->getExtensionName() == name;
-}
-
 #define REQIRE_FEATURE(feature)                                                \
     if (!supported.feature)                                                    \
         return false;                                                          \
     feature = true
 
+#define OPTIONAL_FEATURE(feature) feature = supported.feature
+
 struct GfxContext_VX::DeviceFeatures
-    : vx::StructureChain<
-          vk::PhysicalDeviceFeatures2,
-          vk::PhysicalDeviceTimelineSemaphoreFeatures,
-          vk::PhysicalDeviceSynchronization2Features,
-          vk::PhysicalDeviceDynamicRenderingFeatures,
-          vk::PhysicalDeviceDescriptorIndexingFeatures,
-          vk::PhysicalDeviceExtendedDynamicState3FeaturesEXT,
-          vk::PhysicalDeviceBufferDeviceAddressFeatures,
-          vk::PhysicalDeviceUniformBufferStandardLayoutFeatures> {
+    : vx::StructureChain<vk::PhysicalDeviceFeatures2,
+                         vk::PhysicalDeviceTimelineSemaphoreFeatures,
+                         vk::PhysicalDeviceSynchronization2Features,
+                         vk::PhysicalDeviceDynamicRenderingFeatures,
+                         vk::PhysicalDeviceDescriptorIndexingFeatures,
+                         vk::PhysicalDeviceExtendedDynamicState3FeaturesEXT,
+                         vk::PhysicalDeviceBufferDeviceAddressFeatures,
+                         vk::PhysicalDeviceUniformBufferStandardLayoutFeatures,
+                         vk::PhysicalDeviceHostImageCopyFeaturesEXT> {
     bool Init(vk::PhysicalDevice physicalDevice) {
         DeviceFeatures supported;
         physicalDevice.getFeatures2(&supported);
@@ -53,24 +32,25 @@ struct GfxContext_VX::DeviceFeatures
         REQIRE_FEATURE(descriptorBindingStorageBufferUpdateAfterBind);
         REQIRE_FEATURE(descriptorBindingSampledImageUpdateAfterBind);
         REQIRE_FEATURE(uniformBufferStandardLayout);
+        OPTIONAL_FEATURE(hostImageCopy);
         return true;
     }
 };
 
-void GfxContext_VX::DestroyPresentResources() {
-    for (auto& presentResource : m_PresentResources) {
-        if (presentResource.m_ImageView) {
-            m_Device.destroyImageView(presentResource.m_ImageView);
+void GfxContext_VX::DestroyRenderResources() {
+    for (auto& renderResource : m_RenderResources) {
+        if (renderResource.m_ImageView) {
+            m_Device.destroyImageView(renderResource.m_ImageView);
         }
-        if (presentResource.m_RenderSemaphore) {
-            m_Device.destroySemaphore(presentResource.m_RenderSemaphore);
+        if (renderResource.m_RenderSemaphore) {
+            m_Device.destroySemaphore(renderResource.m_RenderSemaphore);
         }
     }
     DestroyImageAttachment(m_DepthStencilImage);
 }
 
 void GfxContext_VX::Destroy() {
-    DestroyPresentResources();
+    DestroyRenderResources();
     if (m_Swapchain) {
         m_Device.destroySwapchainKHR(m_Swapchain);
     }
@@ -112,21 +92,21 @@ void GfxContext_VX::Destroy() {
     }
 }
 
-bool GfxContext_VX::InitFrame() {
+bool GfxContext_VX::AcquireRenderTarget() {
     const auto& acquireSemaphore = m_AcquireSemaphores[m_FrameIndex];
     m_Allocator.setCurrentFrameIndex(m_FrameIndex);
     if (auto ret = m_Device.acquireNextImageKHR(m_Swapchain, UINT64_MAX,
                                                 acquireSemaphore);
         ret.result == vk::Result::eErrorOutOfDateKHR) [[unlikely]] {
-        return true;
+        return false;
     } else {
-        if (ret.result == vk::Result::eSuboptimalKHR) {
+        if (ret.result == vk::Result::eSuboptimalKHR) [[unlikely]] {
             ret.result = vk::Result::eSuccess;
             m_RenderTargetOutdated = true;
         }
-        m_PresentIndex = ret.get();
+        m_RenderIndex = ret.get();
     }
-    return false;
+    return true;
 }
 
 vx::CommandBuffer GfxContext_VX::BeginFrame() {
@@ -139,13 +119,13 @@ vx::CommandBuffer GfxContext_VX::BeginFrame() {
 
 void GfxContext_VX::EndFrame() {
     const auto& acquireSemaphore = m_AcquireSemaphores[m_FrameIndex];
-    const auto& presentResource = CurrentPresentResource();
+    const auto& renderResource = CurrentRenderResource();
     const auto commandBuffer = m_CommandBuffers[m_FrameIndex];
 
     {
         vx::ImageMemoryBarrierState imageMemoryBarrier;
         imageMemoryBarrier.init(
-            presentResource.m_Image,
+            renderResource.m_Image,
             vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
         imageMemoryBarrier.setOldLayout(vk::ImageLayout::eTransferDstOptimal);
         imageMemoryBarrier.setSrcStageAccess(
@@ -166,7 +146,7 @@ void GfxContext_VX::EndFrame() {
     acquireSemaphoreInfo.setStageMask(
         vk::PipelineStageFlagBits2::bColorAttachmentOutput);
     vk::SemaphoreSubmitInfo renderSemaphoreInfo;
-    renderSemaphoreInfo.setSemaphore(presentResource.m_RenderSemaphore);
+    renderSemaphoreInfo.setSemaphore(renderResource.m_RenderSemaphore);
     renderSemaphoreInfo.setStageMask(
         vk::PipelineStageFlagBits2::bColorAttachmentOutput);
     vk::SubmitInfo2 submitInfo;
@@ -183,9 +163,9 @@ void GfxContext_VX::EndFrame() {
     vk::PresentInfoKHR presentInfo;
     presentInfo.setSwapchainCount(1);
     presentInfo.setSwapchains(&m_Swapchain);
-    presentInfo.setImageIndices(&m_PresentIndex);
+    presentInfo.setImageIndices(&m_RenderIndex);
     presentInfo.setWaitSemaphoreCount(1);
-    presentInfo.setWaitSemaphores(&presentResource.m_RenderSemaphore);
+    presentInfo.setWaitSemaphores(&renderResource.m_RenderSemaphore);
 
     if (const auto ret = m_Queue.presentKHR(presentInfo);
         ret == vk::Result::eErrorOutOfDateKHR ||
@@ -195,15 +175,13 @@ void GfxContext_VX::EndFrame() {
     } else [[likely]] {
         check(ret);
     }
-
-    m_FrameIndex = (m_FrameIndex + 1) % InFlightCount;
 }
 
 void GfxContext_VX::RecreateRenderTarget(vk::Extent2D extent) {
     m_FrameIndex = 0;
     (void)m_Device.waitIdle();
-    DestroyPresentResources();
-    m_PresentResources.count = 0;
+    DestroyRenderResources();
+    m_RenderResources.count = 0;
     const auto oldSwapchain = m_Swapchain;
     InitRenderTarget(extent);
     m_Device.destroySwapchainKHR(oldSwapchain);
@@ -256,7 +234,7 @@ void GfxContext_VX::InitInstance(std::vector<const char*>& extensions) {
 }
 
 bool GfxContext_VX::InitContext() {
-    PhysicalDeviceInfo deviceInfo;
+    vx::PhysicalDeviceInfo deviceInfo;
     DeviceFeatures features;
     m_PhysicalDevice = SelectPhysicalDevice(deviceInfo, features);
     if (!m_PhysicalDevice) {
@@ -281,33 +259,34 @@ void GfxContext_VX::InitRenderTarget(vk::Extent2D extent) {
         vk::ImageUsageFlagBits::bDepthStencilAttachment,
         vk::ImageAspectFlagBits::bDepth | vk::ImageAspectFlagBits::bStencil,
         m_SampleCount);
-    BuildPresentResources();
+    BuildRenderResources();
     m_FrameIndex = InFlightCount - 1;
     m_RenderTargetOutdated = false;
 }
 
-bool GfxContext_VX::QueryPhysicalDevice(vx::PhysicalDevice physicalDevice,
-                                        PhysicalDeviceInfo& deviceInfo) const {
-    if (!deviceInfo.Init(physicalDevice)) {
+bool GfxContext_VX::QueryPhysicalDevice(
+    vx::PhysicalDevice physicalDevice,
+    vx::PhysicalDeviceInfo& deviceInfo) const {
+    if (!deviceInfo.init(physicalDevice)) {
         return false;
     }
-    if (deviceInfo.m_Properties.getApiVersion() < VulkanApiVersion) {
+    if (deviceInfo.properties.getApiVersion() < VulkanApiVersion) {
         return false;
     }
     for (const auto extension : RequiredDeviceExtensions) {
-        if (!deviceInfo.HasExtension(extension)) {
+        if (!deviceInfo.hasExtension(extension)) {
             return false;
         }
     }
     bool hasSurfaceSupport = false;
     bool hasGraphics = false;
-    const auto queueFamilyCount = deviceInfo.m_QueueFamilyProperties.count;
+    const auto queueFamilyCount = deviceInfo.queueFamilyProperties.count;
     for (uint32_t i = 0; i != queueFamilyCount; ++i) {
         const auto val = physicalDevice.getSurfaceSupportKHR(i, m_Surface);
         if (val.result == vk::Result::eSuccess && val.value) {
             hasSurfaceSupport = true;
         }
-        const auto& prop = deviceInfo.m_QueueFamilyProperties[i];
+        const auto& prop = deviceInfo.queueFamilyProperties[i];
         const auto flags = prop.getQueueFlags();
         if (flags & vk::QueueFlagBits::bGraphics) {
             hasGraphics = true;
@@ -320,15 +299,15 @@ bool GfxContext_VX::QueryPhysicalDevice(vx::PhysicalDevice physicalDevice,
 }
 
 vk::PhysicalDevice
-GfxContext_VX::SelectPhysicalDevice(PhysicalDeviceInfo& deviceInfo,
+GfxContext_VX::SelectPhysicalDevice(vx::PhysicalDeviceInfo& deviceInfo,
                                     DeviceFeatures& features) {
     vk::PhysicalDevice firstDevice;
-    PhysicalDeviceInfo firstDeviceInfo;
+    vx::PhysicalDeviceInfo firstDeviceInfo;
     for (const auto physicalDevice :
          m_Instance.enumeratePhysicalDevices().get()) {
         if (QueryPhysicalDevice(physicalDevice, deviceInfo)) {
             if (features.Init(physicalDevice)) {
-                if (deviceInfo.m_Properties.getDeviceType() ==
+                if (deviceInfo.properties.getDeviceType() ==
                     vk::PhysicalDeviceType::eDiscreteGpu) {
                     return physicalDevice;
                 }
@@ -345,10 +324,10 @@ GfxContext_VX::SelectPhysicalDevice(PhysicalDeviceInfo& deviceInfo,
     return firstDevice;
 }
 
-void GfxContext_VX::InitDevice(PhysicalDeviceInfo& physicalDeviceInfo,
-                               vk::PhysicalDeviceFeatures2& features) {
+void GfxContext_VX::InitDevice(vx::PhysicalDeviceInfo& physicalDeviceInfo,
+                               DeviceFeatures& features) {
     m_QueueFamilyIndex = FindQueueFamilyIndex(
-        physicalDeviceInfo.m_QueueFamilyProperties,
+        physicalDeviceInfo.queueFamilyProperties,
         vk::QueueFlagBits::bGraphics | vk::QueueFlagBits::bTransfer, m_Surface);
     const float queuePriorities[1] = {1.0f};
     vk::DeviceQueueCreateInfo queueInfo;
@@ -356,7 +335,23 @@ void GfxContext_VX::InitDevice(PhysicalDeviceInfo& physicalDeviceInfo,
     queueInfo.setQueueCount(1);
     queueInfo.setQueuePriorities(queuePriorities);
 
-    const std::span extensions(RequiredDeviceExtensions);
+    const char* extensionBuf[std::size(RequiredDeviceExtensions) +
+                             std::size(OptionalDeviceExtensions)];
+    std::span<const char* const> extensions;
+    auto extensionPtr = extensionBuf;
+    for (const auto& extension : OptionalDeviceExtensions) {
+        if (physicalDeviceInfo.hasExtension(extension)) {
+            *extensionPtr++ = extension;
+        }
+    }
+    if (extensionPtr == extensionBuf) { // No optional extensions
+        extensions = RequiredDeviceExtensions;
+    } else {
+        extensionPtr =
+            std::ranges::copy(RequiredDeviceExtensions, extensionPtr).out;
+        extensions = {extensionBuf, extensionPtr};
+    }
+
     vk::DeviceCreateInfo deviceInfo;
     deviceInfo.setQueueCreateInfoCount(1);
     deviceInfo.setQueueCreateInfos(&queueInfo);
@@ -367,6 +362,8 @@ void GfxContext_VX::InitDevice(PhysicalDeviceInfo& physicalDeviceInfo,
     m_Device = m_PhysicalDevice.createDevice(deviceInfo).get();
     volkLoadDevice(m_Device.handle);
     m_Queue = m_Device.getQueue(m_QueueFamilyIndex, 0);
+
+    m_HasHostImageCopy = features.hostImageCopy;
 }
 
 void GfxContext_VX::InitAllocator() {
@@ -457,23 +454,23 @@ ImageAttachment GfxContext_VX::CreateImageAttachment(
     return res;
 }
 
-void GfxContext_VX::BuildPresentResources() {
+void GfxContext_VX::BuildRenderResources() {
     const auto swapchainImages =
         m_Device.getSwapchainImagesKHR(m_Swapchain).get();
-    m_PresentResources.count = swapchainImages.count;
-    m_PresentResources.prepare();
+    m_RenderResources.count = swapchainImages.count;
+    m_RenderResources.prepare();
     const vk::SemaphoreCreateInfo semaphoreInfo;
 
     for (unsigned i = 0; i != swapchainImages.count; ++i) {
-        auto& presentResource = m_PresentResources[i];
-        presentResource.m_Image = swapchainImages[i];
+        auto& renderResource = m_RenderResources[i];
+        renderResource.m_Image = swapchainImages[i];
         const auto imageViewInfo = vx::imageViewCreateInfo(
-            vk::ImageViewType::e2D, presentResource.m_Image,
+            vk::ImageViewType::e2D, renderResource.m_Image,
             m_SwapchainImageFormat,
             vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
-        presentResource.m_ImageView =
+        renderResource.m_ImageView =
             m_Device.createImageView(imageViewInfo).get();
-        presentResource.m_RenderSemaphore =
+        renderResource.m_RenderSemaphore =
             m_Device.createSemaphore(semaphoreInfo).get();
     }
 }

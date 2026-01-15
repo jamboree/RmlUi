@@ -12,7 +12,7 @@ struct Renderer_VX : Rml::RenderInterface {
 
     void BeginFrame(vx::CommandBuffer commandBuffer);
     void EndFrame();
-    void ReleaseFrame(unsigned frameNumber);
+    void ResetFrame(unsigned frameNumber);
 
     void ResetRenderTarget() {
         m_SurfaceManager.Destroy(*m_Gfx);
@@ -254,18 +254,21 @@ private:
     CreateBufferResource(size_t size, vk::BufferUsageFlags usageFlags,
                          vma::AllocationInfo* allocInfo = nullptr);
 
-    Rml::TextureHandle CreateTexture(vk::Buffer buffer,
-                                     Rml::Vector2i dimensions);
+    TextureResource CreateTexture(vk::Extent2D extent,
+                                  vk::ImageUsageFlags usageFlags);
+
+    Rml::TextureHandle InitTexture(vk::Extent2D extent, vk::Buffer buffer);
+    Rml::TextureHandle InitTexture(vk::Extent2D extent, const void* hostMemory);
 
     GeometryResource CreateGeometry(Rml::Span<const Rml::Vertex> vertices,
                                     Rml::Span<const int> indices);
 
-    void ReleaseFrameResource(FrameResource& frameResource);
+    void ResetFrameResource(FrameResource& frameResource);
 
     void ReleaseAllResourceUse(uint8_t useFlags);
 
-    void DestroyResource(BufferResource& b);
-    void DestroyResource(TextureResource& t);
+    void DestroyResource(const BufferResource& b);
+    void DestroyResource(const TextureResource& t);
 
     void BeginLayerRendering(Rml::LayerHandle handle);
 
@@ -345,12 +348,12 @@ private:
     std::unique_ptr<FrameResource[]> m_FrameResources;
     vx::CommandBuffer m_CommandBuffer;
     vk::Rect2D m_Scissor;
-    // Rml::Matrix4f m_Transform;
     std::vector<Rml::Matrix4f> m_Matrices;
     Rml::CompiledGeometryHandle m_FullscreenQuadGeometry = 0;
     Rml::LayerHandle m_CurrentLayer = 0;
     uint32_t m_StencilRef = 0;
     unsigned m_PostprocessIndex = 0;
+    unsigned m_PostprocessMask = 0;
     bool m_EnableScissor = false;
     bool m_EnableClipMask = false;
     bool m_LayerRendering = false;

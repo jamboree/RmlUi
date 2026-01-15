@@ -222,10 +222,9 @@ target_sources(rmlui_backend_Win32_VX INTERFACE
 )
 target_link_libraries(rmlui_backend_Win32_VX INTERFACE rmlui_backend_common_headers volk::volk_headers GPUOpen::VulkanMemoryAllocator Boost::headers)
 target_compile_features(rmlui_backend_Win32_VX INTERFACE cxx_std_20)
-target_compile_definitions(rmlui_backend_Win32_VX INTERFACE VK_USE_PLATFORM_WIN32_KHR)
+target_compile_definitions(rmlui_backend_Win32_VX INTERFACE VK_USE_PLATFORM_WIN32_KHR NOMINMAX)
 target_include_directories(rmlui_backend_Win32_VX
     INTERFACE
-        "D:/lib/vx"
 		"D:/lib/vklite/include"
 )
 
