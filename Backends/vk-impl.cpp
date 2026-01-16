@@ -31,12 +31,11 @@ uint32_t vx::PhysicalDevice::findQueueFamilyIndex(
     return index;
 }
 
-void vx::CommandBuffer::cmdGenerateMipmaps(vk::Image image,
-    const vk::Extent3D& extent,
-    uint32_t mipLevels,
-    vk::ImageAspectFlags aspectFlags,
-    uint32_t layerCount,
+void vx::CommandBuffer::cmdGenerateMipmaps(
+    bool hostInitialized, vk::Image image, const vk::Extent3D& extent,
+    uint32_t mipLevels, vk::ImageAspectFlags aspectFlags, uint32_t layerCount,
     uint32_t baseArrayLayer) const {
+    assert(mipLevels > 1);
     vk::ImageMemoryBarrier2 barrier;
     barrier.setImage(image);
     barrier.setSrcStageMask(vk::PipelineStageFlagBits2::bTransfer);
@@ -76,22 +75,29 @@ void vx::CommandBuffer::cmdGenerateMipmaps(vk::Image image,
     blitImageInfo.setRegions(&imageBlit);
     blitImageInfo.setFilter(vk::Filter::eLinear);
 
-    vk::Offset3D mipOffset(extent.width, extent.height, extent.depth);
-    for (uint32_t i = 1; i != mipLevels; ++i) {
-        subresourceRange.baseMipLevel = i - 1;
-        cmdPipelineBarriers(barrier);
-
-        srcSubresource.mipLevel = subresourceRange.baseMipLevel;
-        dstSubresource.mipLevel = i;
-        imageBlit.srcOffsets[1] = mipOffset;
-        if (mipOffset.x > 1)
-            mipOffset.x >>= 1;
-        if (mipOffset.y > 1)
-            mipOffset.y >>= 1;
-        if (mipOffset.z > 1)
-            mipOffset.z >>= 1;
-        imageBlit.dstOffsets[1] = mipOffset;
-        cmdBlitImage2(blitImageInfo);
+    if (uint32_t i = 1; i != mipLevels) {
+        vk::Offset3D mipOffset(extent.width, extent.height, extent.depth);
+        if (!hostInitialized) {
+            subresourceRange.baseMipLevel = i - 1;
+            cmdPipelineBarriers(barrier);
+        }
+        for (;;) {
+            srcSubresource.mipLevel = subresourceRange.baseMipLevel;
+            dstSubresource.mipLevel = i;
+            imageBlit.srcOffsets[1] = mipOffset;
+            if (mipOffset.x > 1)
+                mipOffset.x >>= 1;
+            if (mipOffset.y > 1)
+                mipOffset.y >>= 1;
+            if (mipOffset.z > 1)
+                mipOffset.z >>= 1;
+            imageBlit.dstOffsets[1] = mipOffset;
+            cmdBlitImage2(blitImageInfo);
+            if (++i == mipLevels)
+                break;
+            subresourceRange.baseMipLevel = i - 1;
+            cmdPipelineBarriers(barrier);
+        }
     }
     barrier.setDstStageMask(vk::PipelineStageFlagBits2::bFragmentShader);
 
@@ -111,13 +117,13 @@ bool vx::PhysicalDeviceInfo::init(PhysicalDevice physicalDevice) {
     physicalDevice.getProperties(&properties);
     queueFamilyProperties = physicalDevice.getQueueFamilyProperties();
     if (!physicalDevice.enumerateDeviceExtensionProperties().extract(
-        extensionProperties)) {
+            extensionProperties)) {
         return false;
     }
     std::ranges::sort(extensionProperties, std::ranges::less{},
-        [](const vk::ExtensionProperties& props) {
-        return props.getExtensionName();
-    });
+                      [](const vk::ExtensionProperties& props) {
+                          return props.getExtensionName();
+                      });
     return true;
 }
 
@@ -125,8 +131,8 @@ bool vx::PhysicalDeviceInfo::hasExtension(
     std::string_view name) const noexcept {
     const auto it =
         std::ranges::lower_bound(extensionProperties, name, std::ranges::less{},
-            [](const vk::ExtensionProperties& props) {
-        return props.getExtensionName();
-    });
+                                 [](const vk::ExtensionProperties& props) {
+                                     return props.getExtensionName();
+                                 });
     return it != extensionProperties.end() && it->getExtensionName() == name;
 }

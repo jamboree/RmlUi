@@ -654,7 +654,8 @@ namespace vx {
         }
 
         void cmdGenerateMipmaps(
-            vk::Image image, const vk::Extent3D& extent, uint32_t mipLevels,
+            bool hostInitialized, vk::Image image, const vk::Extent3D& extent,
+            uint32_t mipLevels,
             vk::ImageAspectFlags aspectFlags = vk::ImageAspectFlagBits::bColor,
             uint32_t layerCount = 1, uint32_t baseArrayLayer = 0) const;
 
