@@ -13,11 +13,7 @@ struct Renderer_VX : Rml::RenderInterface {
     void BeginFrame(vx::CommandBuffer commandBuffer);
     void EndFrame();
     void ResetFrame(unsigned frameNumber);
-
-    void ResetRenderTarget() {
-        m_SurfaceManager.Destroy(*m_Gfx);
-        m_SurfaceManager.Invalidate();
-    }
+    void ResetRenderTarget();
 
     /// Called by RmlUi when it wants to compile geometry to be rendered later.
     Rml::CompiledGeometryHandle
@@ -205,12 +201,10 @@ private:
         Elem* m_Elems = nullptr;
     };
 
-    struct SurfaceManager {
-        ~SurfaceManager();
+    struct LayerManager {
+        ~LayerManager();
 
         void Destroy(GfxContext_VX& gfx);
-
-        void Invalidate();
 
         // Push a new layer. All references to previously retrieved layers are
         // invalidated.
@@ -244,7 +238,6 @@ private:
 
         ImageAttachment* m_layers = nullptr;
         LayerState* m_layerStates = nullptr;
-        ImageAttachment m_postprocess[4];
     };
 
     void InitPipelineLayouts();
@@ -291,7 +284,7 @@ private:
                                                   Rml::Vector2f uv_scaling);
 
     const ImageAttachment& GetTopLayer() const {
-        return m_SurfaceManager.GetLayer(m_SurfaceManager.GetTopLayerHandle());
+        return m_LayerManager.GetLayer(m_LayerManager.GetTopLayerHandle());
     }
 
     template<class F>
@@ -324,7 +317,8 @@ private:
     ResourcePool<GeometryResource> m_GeometryResources;
     ResourcePool<TextureResource> m_TextureResources;
     ResourcePool<BufferResource> m_BufferResources;
-    SurfaceManager m_SurfaceManager;
+    LayerManager m_LayerManager;
+    ImageAttachment m_Postprocess[4];
     vx::DescriptorSetLayout<PrimaryDescriptorSet> m_PrimaryDescriptorSetLayout;
     vx::DescriptorSetLayout<TextureDescriptorSet> m_TextureDescriptorSetLayout;
     vx::DescriptorSetLayout<UniformDescriptorSet> m_UniformDescriptorSetLayout;
@@ -349,6 +343,7 @@ private:
     vk::Rect2D m_Scissor;
     std::vector<Rml::Matrix4f> m_Matrices;
     Rml::CompiledGeometryHandle m_FullscreenQuadGeometry = 0;
+    Rml::CompiledGeometryHandle m_BlurQuadGeometry = 0;
     Rml::LayerHandle m_CurrentLayer = 0;
     uint32_t m_StencilRef = 0;
     unsigned m_PostprocessIndex = 0;

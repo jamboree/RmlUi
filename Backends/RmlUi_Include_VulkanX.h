@@ -417,7 +417,7 @@ namespace vx {
     struct BindingTrait {
         using baseType = T;
         using paramType = const T&;
-        static constexpr uint32_t getDescriptorCount(const void* /*limits*/) {
+        static constexpr uint32_t getDescriptorCount(const void* /*context*/) {
             return 1;
         }
         static std::span<const T> getSpan(paramType param) {
@@ -429,7 +429,7 @@ namespace vx {
     struct BindingTrait<T[N]> {
         using baseType = T;
         using paramType = const T (&)[N];
-        static constexpr uint32_t getDescriptorCount(const void* /*limits*/) {
+        static constexpr uint32_t getDescriptorCount(const void* /*context*/) {
             return N;
         }
         static std::span<const T> getSpan(paramType param) {
@@ -441,9 +441,9 @@ namespace vx {
     struct BindingTrait<T[]> {
         using baseType = T;
         using paramType = std::span<const T>;
-        template<class Limits>
-        static constexpr uint32_t getDescriptorCount(const Limits* limits) {
-            return T::getMaxDescriptorCount(*limits);
+        template<class Context>
+        static constexpr uint32_t getDescriptorCount(const Context* context) {
+            return T::getMaxDescriptorCount(*context);
         }
         static std::span<const T> getSpan(paramType param) { return param; }
     };
@@ -488,16 +488,16 @@ namespace vx {
 
         static constexpr vk::DescriptorBindingFlags flags = Flags;
 
-        template<class Limits>
+        template<class Context>
         static vk::DescriptorSetLayoutBinding
-        toDescriptorSetLayoutBinding(const Limits* limits) {
+        toDescriptorSetLayoutBinding(const Context* context) {
             vk::DescriptorSetLayoutBinding binding;
             binding.setBinding(Id);
             binding.setDescriptorType(Ty::descriptorType);
             binding.setStageFlags(Stages);
-            binding.setDescriptorCount(Trait::getDescriptorCount(limits));
+            binding.setDescriptorCount(Trait::getDescriptorCount(context));
             if constexpr (HasImmutableSampler<T>) {
-                binding.setImmutableSamplers(limits->immutableSamplers +
+                binding.setImmutableSamplers(context->immutableSamplers +
                                              T::immutableSamplerIndex);
             }
             return binding;
@@ -531,10 +531,10 @@ namespace vx {
 
     template<class... Binding>
     struct DescriptorSetLayoutTrait<TypeList<Binding...>> {
-        template<class Limits>
+        template<class Context>
         static std::array<vk::DescriptorSetLayoutBinding, sizeof...(Binding)>
-        getBindings(const Limits* limits) {
-            return {Binding::toDescriptorSetLayoutBinding(limits)...};
+        getBindings(const Context* context) {
+            return {Binding::toDescriptorSetLayoutBinding(context)...};
         }
 
         static consteval auto getBindingFlags() {
@@ -723,9 +723,10 @@ namespace vx {
 
         using BufferDescriptorBase::BufferDescriptorBase;
 
-        template<class Limits>
-        static constexpr uint32_t getMaxDescriptorCount(const Limits& limits) {
-            return limits.maxUniformBuffers;
+        template<class Context>
+        static constexpr uint32_t
+        getMaxDescriptorCount(const Context& context) {
+            return context.maxUniformBuffers;
         }
     };
 
@@ -735,9 +736,10 @@ namespace vx {
 
         using BufferDescriptorBase::BufferDescriptorBase;
 
-        template<class Limits>
-        static constexpr uint32_t getMaxDescriptorCount(const Limits& limits) {
-            return limits.maxStorageBuffers;
+        template<class Context>
+        static constexpr uint32_t
+        getMaxDescriptorCount(const Context& context) {
+            return context.maxStorageBuffers;
         }
     };
 
@@ -754,9 +756,10 @@ namespace vx {
 
         SamplerDescriptor(vk::Sampler sampler) noexcept { setSampler(sampler); }
 
-        template<class Limits>
-        static constexpr uint32_t getMaxDescriptorCount(const Limits& limits) {
-            return limits.maxSamplers;
+        template<class Context>
+        static constexpr uint32_t
+        getMaxDescriptorCount(const Context& context) {
+            return context.maxSamplers;
         }
     };
 
@@ -767,9 +770,10 @@ namespace vx {
 
         ImmutableSamplerDescriptor(vk::Sampler) noexcept {}
 
-        template<class Limits>
-        static constexpr uint32_t getMaxDescriptorCount(const Limits& limits) {
-            return limits.maxSamplers;
+        template<class Context>
+        static constexpr uint32_t
+        getMaxDescriptorCount(const Context& context) {
+            return context.maxSamplers;
         }
     };
 
@@ -786,9 +790,10 @@ namespace vx {
             setImageLayout(imageLayout);
         }
 
-        template<class Limits>
-        static constexpr uint32_t getMaxDescriptorCount(const Limits& limits) {
-            return limits.maxCombinedImageSamplers;
+        template<class Context>
+        static constexpr uint32_t
+        getMaxDescriptorCount(const Context& context) {
+            return context.maxCombinedImageSamplers;
         }
     };
 
@@ -806,9 +811,10 @@ namespace vx {
             setImageLayout(imageLayout);
         }
 
-        template<class Limits>
-        static constexpr uint32_t getMaxDescriptorCount(const Limits& limits) {
-            return limits.maxCombinedImageSamplers;
+        template<class Context>
+        static constexpr uint32_t
+        getMaxDescriptorCount(const Context& context) {
+            return context.maxCombinedImageSamplers;
         }
     };
 
@@ -830,9 +836,10 @@ namespace vx {
                 vk::ImageLayout::eShaderReadOnlyOptimal) noexcept
             : ImageOnlyDescriptorBase(imageView, imageLayout) {}
 
-        template<class Limits>
-        static constexpr uint32_t getMaxDescriptorCount(const Limits& limits) {
-            return limits.maxSampledImages;
+        template<class Context>
+        static constexpr uint32_t
+        getMaxDescriptorCount(const Context& context) {
+            return context.maxSampledImages;
         }
     };
 
@@ -843,9 +850,10 @@ namespace vx {
         StorageImageDescriptor(vk::ImageView imageView) noexcept
             : ImageOnlyDescriptorBase(imageView, vk::ImageLayout::eGeneral) {}
 
-        template<class Limits>
-        static constexpr uint32_t getMaxDescriptorCount(const Limits& limits) {
-            return limits.maxStorageImages;
+        template<class Context>
+        static constexpr uint32_t
+        getMaxDescriptorCount(const Context& context) {
+            return context.maxStorageImages;
         }
     };
 
@@ -859,9 +867,10 @@ namespace vx {
                 vk::ImageLayout::eAttachmentOptimal) noexcept
             : ImageOnlyDescriptorBase(imageView, imageLayout) {}
 
-        template<class Limits>
-        static constexpr uint32_t getMaxDescriptorCount(const Limits& limits) {
-            return limits.maxInputAttachments;
+        template<class Context>
+        static constexpr uint32_t
+        getMaxDescriptorCount(const Context& context) {
+            return context.maxInputAttachments;
         }
     };
 
@@ -995,13 +1004,13 @@ namespace vx {
             return ret.result;
         }
 
-        template<class Def, class Limits>
+        template<class Def, class Context>
         vk::Result createTypedDescriptorSetLayoutWithContext(
-            DescriptorSetLayout<Def>* out, const Limits& limits,
+            DescriptorSetLayout<Def>* out, const Context& context,
             vk::DescriptorSetLayoutCreateFlags flags = {}) const {
             using Trait = DescriptorSetLayoutTrait<EnumMembers<Def>>;
             const auto ret = createDescriptorSetLayout(
-                flags, Trait::getBindings(&limits), Trait::getBindingFlags());
+                flags, Trait::getBindings(&context), Trait::getBindingFlags());
             *out = ret.value;
             return ret.result;
         }

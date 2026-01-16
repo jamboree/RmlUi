@@ -255,28 +255,18 @@ struct Renderer_VX::LayerState {
     }
 };
 
-Renderer_VX::SurfaceManager::~SurfaceManager() {
+Renderer_VX::LayerManager::~LayerManager() {
     std::free(m_layers);
     std::free(m_layerStates);
 }
 
-void Renderer_VX::SurfaceManager::Destroy(GfxContext_VX& gfx) {
+void Renderer_VX::LayerManager::Destroy(GfxContext_VX& gfx) {
     for (auto& image : std::span(m_layers, m_layers_capacity)) {
         gfx.DestroyImageAttachment(image);
     }
-    for (auto& image : m_postprocess) {
-        gfx.DestroyImageAttachment(image);
-    }
 }
 
-void Renderer_VX::SurfaceManager::Invalidate() {
-    m_layers_capacity = 0;
-    for (auto& image : m_postprocess) {
-        image.m_Image = {};
-    }
-}
-
-Rml::LayerHandle Renderer_VX::SurfaceManager::PushLayer(GfxContext_VX& gfx) {
+Rml::LayerHandle Renderer_VX::LayerManager::PushLayer(GfxContext_VX& gfx) {
     RMLUI_ASSERT(m_layers_size <= m_layers_capacity);
 
     if (m_layers_size == m_layers_capacity) {
@@ -298,7 +288,7 @@ Rml::LayerHandle Renderer_VX::SurfaceManager::PushLayer(GfxContext_VX& gfx) {
 }
 
 Renderer_VX::LayerState&
-Renderer_VX::SurfaceManager::GetLayerState(Rml::LayerHandle layer) {
+Renderer_VX::LayerManager::GetLayerState(Rml::LayerHandle layer) {
     RMLUI_ASSERT((size_t)layer < (size_t)m_layers_size);
     return m_layerStates[layer];
 }
@@ -367,7 +357,11 @@ void Renderer_VX::Destroy() {
         ResetFrameResource(frameResource);
     }
 
-    m_SurfaceManager.Destroy(*m_Gfx);
+    m_LayerManager.Destroy(*m_Gfx);
+    for (auto& image : m_Postprocess) {
+        m_Gfx->DestroyImageAttachment(image);
+    }
+
     if (m_FullscreenQuadGeometry) {
         ReleaseGeometry(m_FullscreenQuadGeometry);
     }
@@ -450,6 +444,7 @@ static Rml::Matrix4f Project(vk::Extent2D extent,
 void Renderer_VX::BeginFrame(vx::CommandBuffer commandBuffer) {
     m_CommandBuffer = commandBuffer;
     m_Matrices.clear();
+    m_BlurQuadGeometry = 0;
     m_StencilRef = 1;
     m_PostprocessIndex = 0;
     m_PostprocessMask = 0;
@@ -479,18 +474,18 @@ void Renderer_VX::BeginFrame(vx::CommandBuffer commandBuffer) {
         vk::PipelineBindPoint::eGraphics, m_PrimaryPipelineLayout, 0, 1,
         &frameResource.m_PrimaryDescriptorSet);
 
-    const auto topLayer = m_SurfaceManager.PushLayer(*m_Gfx);
+    const auto topLayer = m_LayerManager.PushLayer(*m_Gfx);
     BeginLayerRendering(topLayer);
 }
 
 void Renderer_VX::EndFrame() {
-    RMLUI_ASSERT(m_SurfaceManager.GetTopLayerHandle() == 0);
+    RMLUI_ASSERT(m_LayerManager.GetTopLayerHandle() == 0);
     const uint8_t useFlag = 2u << m_Gfx->m_FrameIndex;
     auto& frameResource = m_FrameResources[m_Gfx->m_FrameIndex];
 
     EndLayerRendering();
     ResolveLayer(0, m_Gfx->CurrentRenderResource().m_Image);
-    m_SurfaceManager.PopLayer();
+    m_LayerManager.PopLayer();
 
     if (const auto size = m_Matrices.size() * sizeof(Rml::Matrix4f)) {
         vma::AllocationInfo allocInfo;
@@ -507,6 +502,15 @@ void Renderer_VX::EndFrame() {
 void Renderer_VX::ResetFrame(unsigned frameNumber) {
     ReleaseAllResourceUse(2u << frameNumber);
     ResetFrameResource(m_FrameResources[frameNumber]);
+}
+
+void Renderer_VX::ResetRenderTarget() {
+    m_LayerManager.Destroy(*m_Gfx);
+    m_LayerManager.m_layers_capacity = 0;
+    for (auto& image : m_Postprocess) {
+        m_Gfx->DestroyImageAttachment(image);
+        image.m_Image = {};
+    }
 }
 
 Rml::CompiledGeometryHandle
@@ -927,8 +931,8 @@ void Renderer_VX::ActivateLayerRendering() {
     }
     m_LayerRendering = true;
 
-    const auto& colorImage = m_SurfaceManager.GetLayer(m_CurrentLayer);
-    auto& layerState = m_SurfaceManager.GetLayerState(m_CurrentLayer);
+    const auto& colorImage = m_LayerManager.GetLayer(m_CurrentLayer);
+    auto& layerState = m_LayerManager.GetLayerState(m_CurrentLayer);
     vx::ImageMemoryBarrierState imageMemoryBarriers[2];
     auto& [colorImageBarrier, depthStencilImageBarrier] = imageMemoryBarriers;
 
@@ -1010,8 +1014,8 @@ void Renderer_VX::EndLayerRendering() {
 }
 
 const ImageAttachment& Renderer_VX::GetPostprocess(unsigned index) {
-    RMLUI_ASSERT(index < std::size(m_SurfaceManager.m_postprocess));
-    auto& fb = m_SurfaceManager.m_postprocess[index];
+    RMLUI_ASSERT(index < std::size(m_Postprocess));
+    auto& fb = m_Postprocess[index];
     if (!fb.m_Image) {
         fb = m_Gfx->CreateImageAttachment(
             m_Gfx->m_SwapchainImageFormat,
@@ -1107,13 +1111,13 @@ void Renderer_VX::SetPostprocessSample(unsigned index) {
 }
 
 void Renderer_VX::ResolveLayer(Rml::LayerHandle source, vk::Image dstImage) {
-    auto& layerState = m_SurfaceManager.GetLayerState(source);
+    auto& layerState = m_LayerManager.GetLayerState(source);
     RMLUI_ASSERT(layerState.m_State != LayerState::None);
 
     vx::ImageMemoryBarrierState imageBarriers[2];
     auto& [srcImageBarrier, dstImageBarrier] = imageBarriers;
 
-    srcImageBarrier.init(m_SurfaceManager.GetLayer(source).m_Image,
+    srcImageBarrier.init(m_LayerManager.GetLayer(source).m_Image,
                          vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
     layerState.SetImageBarrierSrc(srcImageBarrier);
     srcImageBarrier.setNewLayout(vk::ImageLayout::eTransferSrcOptimal);
@@ -1194,7 +1198,7 @@ void Renderer_VX::ReleaseShader(Rml::CompiledShaderHandle shader) {
 Rml::LayerHandle Renderer_VX::PushLayer() {
     EndLayerRendering();
 
-    const auto topLayer = m_SurfaceManager.PushLayer(*m_Gfx);
+    const auto topLayer = m_LayerManager.PushLayer(*m_Gfx);
     BeginLayerRendering(topLayer);
     return topLayer;
 }
@@ -1234,7 +1238,7 @@ void Renderer_VX::CompositeLayers(
                           : m_MsPassthroughPipeline,
                       blend_mode == BlendMode::Blend);
 
-    const auto topLayer = m_SurfaceManager.GetTopLayerHandle();
+    const auto topLayer = m_LayerManager.GetTopLayerHandle();
     if (topLayer != destination) {
         EndLayerRendering();
         BeginLayerRendering(topLayer);
@@ -1243,8 +1247,8 @@ void Renderer_VX::CompositeLayers(
 
 void Renderer_VX::PopLayer() {
     EndLayerRendering();
-    m_SurfaceManager.PopLayer();
-    BeginLayerRendering(m_SurfaceManager.GetTopLayerHandle());
+    m_LayerManager.PopLayer();
+    BeginLayerRendering(m_LayerManager.GetTopLayerHandle());
 }
 
 Rml::TextureHandle Renderer_VX::SaveLayerAsTexture() {
@@ -1255,7 +1259,7 @@ Rml::TextureHandle Renderer_VX::SaveLayerAsTexture() {
 
     EndLayerRendering();
 
-    const auto topLayer = m_SurfaceManager.GetTopLayerHandle();
+    const auto topLayer = m_LayerManager.GetTopLayerHandle();
     const auto postprocessImage = GetPostprocess(m_PostprocessIndex).m_Image;
     ResolveLayer(topLayer, postprocessImage);
 
@@ -1342,7 +1346,7 @@ inline Rml::CompiledFilterHandle CreateFilter(T&& filter) {
 Rml::CompiledFilterHandle Renderer_VX::SaveLayerAsMaskImage() {
     EndLayerRendering();
 
-    const auto topLayer = m_SurfaceManager.GetTopLayerHandle();
+    const auto topLayer = m_LayerManager.GetTopLayerHandle();
     const auto maskImage = GetPostprocess(3).m_Image;
     ResolveLayer(topLayer, maskImage);
 
@@ -2006,14 +2010,15 @@ void Renderer_VX::RenderBlur(float sigma, const unsigned (&postprocess)[2]) {
     // aliasing.
     SetViewport(m_CommandBuffer, extent.width / 2, extent.height / 2);
 
-    // Scale UVs if we have even dimensions, such that texture fetches align
-    // perfectly between texels, thereby producing a 50% blend of neighboring
-    // texels.
-    const Rml::Vector2f uv_scaling = {
-        (extent.width & 1) ? (1.f - 1.f / extent.width) : 1.f,
-        (extent.height & 1) ? (1.f - 1.f / extent.height) : 1.f};
-
-    const auto quadGeometry = UseFullscreenQuad({}, uv_scaling);
+    if (!m_BlurQuadGeometry) {
+        // Scale UVs if we have even dimensions, such that texture fetches align
+        // perfectly between texels, thereby producing a 50% blend of
+        // neighboring texels.
+        const Rml::Vector2f uv_scaling = {
+            (extent.width & 1) ? (1.f - 1.f / extent.width) : 1.f,
+            (extent.height & 1) ? (1.f - 1.f / extent.height) : 1.f};
+        m_BlurQuadGeometry = UseFullscreenQuad({}, uv_scaling);
+    }
 
     for (int i = 0; i < pass_level; ++i) {
         scissor.offset.x = (scissor.offset.x + 1) / 2;
@@ -2024,7 +2029,7 @@ void Renderer_VX::RenderBlur(float sigma, const unsigned (&postprocess)[2]) {
         const auto postprocesImage = BeginPostprocess(postprocess[j ^ 1]);
         SetPostprocessSample(postprocess[j]);
         m_CommandBuffer.cmdSetScissor(0, 1, &scissor);
-        m_GeometryResources.Get(~quadGeometry).Draw(m_CommandBuffer);
+        m_GeometryResources.Get(~m_BlurQuadGeometry).Draw(m_CommandBuffer);
         m_CommandBuffer.cmdEndRendering();
         TransitionToSample(postprocesImage, false);
     }
