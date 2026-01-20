@@ -21,7 +21,7 @@ struct GfxContext_VX {
 
     struct DeviceFeatures;
 
-    struct RenderResource {
+    struct PresentResource {
         vk::Image m_Image;
         vk::ImageView m_ImageView;
         vk::Semaphore m_RenderSemaphore;
@@ -43,7 +43,7 @@ struct GfxContext_VX {
     vk::Semaphore m_TempSemaphore;
     vk::Fence m_RenderFences[InFlightCount];
     vk::SwapchainKHR m_Swapchain;
-    vx::List<RenderResource> m_RenderResources;
+    vx::List<PresentResource> m_PresentResources;
     ImageAttachment m_DepthStencilImage;
 
     vk::Format m_SwapchainImageFormat = vk::Format::eB8G8R8A8Unorm;
@@ -51,7 +51,7 @@ struct GfxContext_VX {
     vk::SampleCountFlagBits m_SampleCount = vk::SampleCountFlagBits::b1;
     vk::Extent2D m_FrameExtent;
     uint32_t m_FrameIndex = 0;
-    uint32_t m_RenderIndex = 0;
+    uint32_t m_PresentIndex = 0;
     uint32_t m_QueueFamilyIndex = 0;
     bool m_HasHostImageCopy = false;
     bool m_RenderTargetOutdated = false;
@@ -60,8 +60,8 @@ struct GfxContext_VX {
 
     void Destroy();
 
-    const RenderResource& CurrentRenderResource() const {
-        return m_RenderResources[m_RenderIndex];
+    const PresentResource& CurrentPresentResource() const {
+        return m_PresentResources[m_PresentIndex];
     }
 
     void WaitNextFrame() {
@@ -101,7 +101,7 @@ struct GfxContext_VX {
 
     void BuildSwapchain(const vk::SurfaceCapabilitiesKHR& capabilities);
 
-    void BuildRenderResources();
+    void BuildPresentResources();
 
     void UpdateExtent(const vk::SurfaceCapabilitiesKHR& capabilities,
                       vk::Extent2D extent);

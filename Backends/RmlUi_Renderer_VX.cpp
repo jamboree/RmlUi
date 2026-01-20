@@ -484,7 +484,7 @@ void Renderer_VX::EndFrame() {
     auto& frameResource = m_FrameResources[m_Gfx->m_FrameIndex];
 
     EndLayerRendering();
-    ResolveLayer(0, m_Gfx->CurrentRenderResource().m_Image);
+    ResolveLayer(0, m_Gfx->CurrentPresentResource().m_Image);
     m_LayerManager.PopLayer();
 
     if (const auto size = m_Matrices.size() * sizeof(Rml::Matrix4f)) {

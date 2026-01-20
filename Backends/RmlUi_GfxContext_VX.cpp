@@ -38,12 +38,12 @@ struct GfxContext_VX::DeviceFeatures
 };
 
 void GfxContext_VX::DestroyRenderResources() {
-    for (auto& renderResource : m_RenderResources) {
-        if (renderResource.m_ImageView) {
-            m_Device.destroyImageView(renderResource.m_ImageView);
+    for (auto& presentResource : m_PresentResources) {
+        if (presentResource.m_ImageView) {
+            m_Device.destroyImageView(presentResource.m_ImageView);
         }
-        if (renderResource.m_RenderSemaphore) {
-            m_Device.destroySemaphore(renderResource.m_RenderSemaphore);
+        if (presentResource.m_RenderSemaphore) {
+            m_Device.destroySemaphore(presentResource.m_RenderSemaphore);
         }
     }
     DestroyImageAttachment(m_DepthStencilImage);
@@ -104,7 +104,7 @@ bool GfxContext_VX::AcquireRenderTarget() {
             ret.result = vk::Result::eSuccess;
             m_RenderTargetOutdated = true;
         }
-        m_RenderIndex = ret.get();
+        m_PresentIndex = ret.get();
     }
     return true;
 }
@@ -119,13 +119,13 @@ vx::CommandBuffer GfxContext_VX::BeginFrame() {
 
 void GfxContext_VX::EndFrame() {
     const auto& acquireSemaphore = m_AcquireSemaphores[m_FrameIndex];
-    const auto& renderResource = CurrentRenderResource();
+    const auto& presentResource = CurrentPresentResource();
     const auto commandBuffer = m_CommandBuffers[m_FrameIndex];
 
     {
         vx::ImageMemoryBarrierState imageMemoryBarrier;
         imageMemoryBarrier.init(
-            renderResource.m_Image,
+            presentResource.m_Image,
             vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
         imageMemoryBarrier.setOldLayout(vk::ImageLayout::eTransferDstOptimal);
         imageMemoryBarrier.setSrcStageAccess(
@@ -146,7 +146,7 @@ void GfxContext_VX::EndFrame() {
     acquireSemaphoreInfo.setStageMask(
         vk::PipelineStageFlagBits2::bColorAttachmentOutput);
     vk::SemaphoreSubmitInfo renderSemaphoreInfo;
-    renderSemaphoreInfo.setSemaphore(renderResource.m_RenderSemaphore);
+    renderSemaphoreInfo.setSemaphore(presentResource.m_RenderSemaphore);
     renderSemaphoreInfo.setStageMask(
         vk::PipelineStageFlagBits2::bColorAttachmentOutput);
     vk::SubmitInfo2 submitInfo;
@@ -163,9 +163,9 @@ void GfxContext_VX::EndFrame() {
     vk::PresentInfoKHR presentInfo;
     presentInfo.setSwapchainCount(1);
     presentInfo.setSwapchains(&m_Swapchain);
-    presentInfo.setImageIndices(&m_RenderIndex);
+    presentInfo.setImageIndices(&m_PresentIndex);
     presentInfo.setWaitSemaphoreCount(1);
-    presentInfo.setWaitSemaphores(&renderResource.m_RenderSemaphore);
+    presentInfo.setWaitSemaphores(&presentResource.m_RenderSemaphore);
 
     if (const auto ret = m_Queue.presentKHR(presentInfo);
         ret == vk::Result::eErrorOutOfDateKHR ||
@@ -181,7 +181,7 @@ void GfxContext_VX::RecreateRenderTarget(vk::Extent2D extent) {
     m_FrameIndex = 0;
     (void)m_Device.waitIdle();
     DestroyRenderResources();
-    m_RenderResources.count = 0;
+    m_PresentResources.count = 0;
     const auto oldSwapchain = m_Swapchain;
     InitRenderTarget(extent);
     m_Device.destroySwapchainKHR(oldSwapchain);
@@ -259,7 +259,7 @@ void GfxContext_VX::InitRenderTarget(vk::Extent2D extent) {
         vk::ImageUsageFlagBits::bDepthStencilAttachment,
         vk::ImageAspectFlagBits::bDepth | vk::ImageAspectFlagBits::bStencil,
         m_SampleCount);
-    BuildRenderResources();
+    BuildPresentResources();
     m_FrameIndex = InFlightCount - 1;
     m_RenderTargetOutdated = false;
 }
@@ -454,23 +454,23 @@ ImageAttachment GfxContext_VX::CreateImageAttachment(
     return res;
 }
 
-void GfxContext_VX::BuildRenderResources() {
+void GfxContext_VX::BuildPresentResources() {
     const auto swapchainImages =
         m_Device.getSwapchainImagesKHR(m_Swapchain).get();
-    m_RenderResources.count = swapchainImages.count;
-    m_RenderResources.prepare();
+    m_PresentResources.count = swapchainImages.count;
+    m_PresentResources.prepare();
     const vk::SemaphoreCreateInfo semaphoreInfo;
 
     for (unsigned i = 0; i != swapchainImages.count; ++i) {
-        auto& renderResource = m_RenderResources[i];
-        renderResource.m_Image = swapchainImages[i];
+        auto& presentResource = m_PresentResources[i];
+        presentResource.m_Image = swapchainImages[i];
         const auto imageViewInfo = vx::imageViewCreateInfo(
-            vk::ImageViewType::e2D, renderResource.m_Image,
+            vk::ImageViewType::e2D, presentResource.m_Image,
             m_SwapchainImageFormat,
             vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
-        renderResource.m_ImageView =
+        presentResource.m_ImageView =
             m_Device.createImageView(imageViewInfo).get();
-        renderResource.m_RenderSemaphore =
+        presentResource.m_RenderSemaphore =
             m_Device.createSemaphore(semaphoreInfo).get();
     }
 }
