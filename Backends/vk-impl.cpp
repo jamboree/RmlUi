@@ -36,7 +36,7 @@ void vx::CommandBuffer::cmdGenerateMipmaps(
     uint32_t mipLevels, vk::ImageAspectFlags aspectFlags, uint32_t layerCount,
     uint32_t baseArrayLayer) const {
     assert(mipLevels > 1);
-    vk::ImageMemoryBarrier2 barrier;
+    vx::ImageMemoryBarrier2 barrier;
     barrier.setImage(image);
     barrier.setSrcStageMask(vk::PipelineStageFlagBits2::bTransfer);
     barrier.setDstStageMask(vk::PipelineStageFlagBits2::bTransfer);

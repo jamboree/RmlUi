@@ -237,7 +237,7 @@ struct Renderer_VX::LayerState {
     enum State : uint8_t { None, Transfer, Attachment };
     State m_State = None;
 
-    void SetImageBarrierSrc(vx::ImageMemoryBarrierState& imageBarrier) const {
+    void SetImageBarrierSrc(vx::ImageMemoryBarrier2& imageBarrier) const {
         switch (m_State) {
         case Transfer:
             imageBarrier.setOldLayout(vk::ImageLayout::eTransferSrcOptimal);
@@ -482,9 +482,10 @@ void Renderer_VX::EndFrame() {
     RMLUI_ASSERT(m_LayerManager.GetTopLayerHandle() == 0);
     const uint8_t useFlag = 2u << m_Gfx->m_FrameIndex;
     auto& frameResource = m_FrameResources[m_Gfx->m_FrameIndex];
+    const auto presentImage = m_Gfx->CurrentPresentResource().m_Image;
 
     EndLayerRendering();
-    ResolveLayer(0, m_Gfx->CurrentPresentResource().m_Image);
+    ResolveLayer(0, presentImage);
     m_LayerManager.PopLayer();
 
     if (const auto size = m_Matrices.size() * sizeof(Rml::Matrix4f)) {
@@ -497,6 +498,17 @@ void Renderer_VX::EndFrame() {
             {frameResource.m_PrimaryDescriptorSet->matrices =
                  frameResource.m_StorageBuffer.m_Buffer});
     }
+
+    vx::ImageMemoryBarrier2 imageMemoryBarrier;
+    imageMemoryBarrier.init(
+        presentImage, vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
+    imageMemoryBarrier.setOldLayout(vk::ImageLayout::eTransferDstOptimal);
+    imageMemoryBarrier.setSrcStageAccess(vk::PipelineStageFlagBits2::bTransfer,
+                                         vk::AccessFlagBits2::bTransferWrite);
+    imageMemoryBarrier.setNewLayout(vk::ImageLayout::ePresentSrcKHR);
+    imageMemoryBarrier.setDstStageAccess(
+        vk::PipelineStageFlagBits2::bAllCommands, vk::AccessFlagBits2::eNone);
+    m_CommandBuffer.cmdPipelineBarriers(imageMemoryBarrier);
 }
 
 void Renderer_VX::ResetFrame(unsigned frameNumber) {
@@ -933,7 +945,7 @@ void Renderer_VX::ActivateLayerRendering() {
 
     const auto& colorImage = m_LayerManager.GetLayer(m_CurrentLayer);
     auto& layerState = m_LayerManager.GetLayerState(m_CurrentLayer);
-    vx::ImageMemoryBarrierState imageMemoryBarriers[2];
+    vx::ImageMemoryBarrier2 imageMemoryBarriers[2];
     auto& [colorImageBarrier, depthStencilImageBarrier] = imageMemoryBarriers;
 
     colorImageBarrier.init(
@@ -963,7 +975,7 @@ void Renderer_VX::ActivateLayerRendering() {
         vk::AccessFlagBits2::bDepthStencilAttachmentRead |
             vk::AccessFlagBits2::bDepthStencilAttachmentWrite);
 
-    m_CommandBuffer.cmdPipelineBarriers(rawIns(imageMemoryBarriers));
+    m_CommandBuffer.cmdPipelineBarriers(imageMemoryBarriers);
 
     vk::RenderingAttachmentInfo colorAttachmentInfo;
     colorAttachmentInfo.setImageView(colorImage.m_ImageView);
@@ -1037,7 +1049,7 @@ const ImageAttachment& Renderer_VX::GetPostprocess(unsigned index) {
 
 vk::Image Renderer_VX::BeginPostprocess(unsigned index, bool load) {
     const auto& colorImage = GetPostprocess(index);
-    vx::ImageMemoryBarrierState colorImageBarrier;
+    vx::ImageMemoryBarrier2 colorImageBarrier;
 
     colorImageBarrier.init(
         colorImage.m_Image,
@@ -1084,7 +1096,7 @@ vk::Image Renderer_VX::BeginPostprocess(unsigned index, bool load) {
 }
 
 void Renderer_VX::TransitionToSample(vk::Image image, bool fromTransfer) {
-    vx::ImageMemoryBarrierState imageBarrier;
+    vx::ImageMemoryBarrier2 imageBarrier;
     imageBarrier.init(image,
                       vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
     if (fromTransfer) {
@@ -1114,7 +1126,7 @@ void Renderer_VX::ResolveLayer(Rml::LayerHandle source, vk::Image dstImage) {
     auto& layerState = m_LayerManager.GetLayerState(source);
     RMLUI_ASSERT(layerState.m_State != LayerState::None);
 
-    vx::ImageMemoryBarrierState imageBarriers[2];
+    vx::ImageMemoryBarrier2 imageBarriers[2];
     auto& [srcImageBarrier, dstImageBarrier] = imageBarriers;
 
     srcImageBarrier.init(m_LayerManager.GetLayer(source).m_Image,
@@ -1130,7 +1142,7 @@ void Renderer_VX::ResolveLayer(Rml::LayerHandle source, vk::Image dstImage) {
     dstImageBarrier.setNewLayout(vk::ImageLayout::eTransferDstOptimal);
     dstImageBarrier.setDstStageAccess(vk::PipelineStageFlagBits2::bTransfer,
                                       vk::AccessFlagBits2::bTransferWrite);
-    m_CommandBuffer.cmdPipelineBarriers(rawIns(imageBarriers));
+    m_CommandBuffer.cmdPipelineBarriers(imageBarriers);
 
     const auto setImageInfo = [&](auto& imageInfo, auto& imageRegion) {
         const auto subresource =
@@ -1263,7 +1275,7 @@ Rml::TextureHandle Renderer_VX::SaveLayerAsTexture() {
     const auto postprocessImage = GetPostprocess(m_PostprocessIndex).m_Image;
     ResolveLayer(topLayer, postprocessImage);
 
-    vx::ImageMemoryBarrierState imageBarriers[2];
+    vx::ImageMemoryBarrier2 imageBarriers[2];
     auto& [srcImageBarrier, dstImageBarrier] = imageBarriers;
 
     srcImageBarrier.init(postprocessImage,
@@ -1280,7 +1292,7 @@ Rml::TextureHandle Renderer_VX::SaveLayerAsTexture() {
     dstImageBarrier.setNewLayout(vk::ImageLayout::eTransferDstOptimal);
     dstImageBarrier.setDstStageAccess(vk::PipelineStageFlagBits2::bTransfer,
                                       vk::AccessFlagBits2::bTransferWrite);
-    m_CommandBuffer.cmdPipelineBarriers(rawIns(imageBarriers));
+    m_CommandBuffer.cmdPipelineBarriers(imageBarriers);
 
     // Move to origin.
     const vx::Range3D srcRegion(vx::toOffset3D(m_Scissor.getOffset()),
@@ -1783,7 +1795,7 @@ Rml::TextureHandle Renderer_VX::InitTexture(vk::Extent2D extent,
 
     const auto commandBuffer = m_Gfx->BeginTemp();
 
-    vx::ImageMemoryBarrierState imageMemoryBarrier;
+    vx::ImageMemoryBarrier2 imageMemoryBarrier;
     imageMemoryBarrier.init(
         t.m_Image, vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
     imageMemoryBarrier.setNewLayout(vk::ImageLayout::eTransferDstOptimal);
@@ -2083,7 +2095,7 @@ void Renderer_VX::RenderBlur(float sigma, const unsigned (&postprocess)[2]) {
     // Blit the blurred image to the scissor region with upscaling.
     m_CommandBuffer.cmdSetScissor(0, 1, &m_Scissor);
 
-    vx::ImageMemoryBarrierState imageBarriers[2];
+    vx::ImageMemoryBarrier2 imageBarriers[2];
     auto& [srcImageBarrier, dstImageBarrier] = imageBarriers;
 
     srcImageBarrier.init(postprocesImage1,
@@ -2101,7 +2113,7 @@ void Renderer_VX::RenderBlur(float sigma, const unsigned (&postprocess)[2]) {
     dstImageBarrier.setNewLayout(vk::ImageLayout::eTransferDstOptimal);
     dstImageBarrier.setDstStageAccess(vk::PipelineStageFlagBits2::bTransfer,
                                       vk::AccessFlagBits2::bTransferWrite);
-    m_CommandBuffer.cmdPipelineBarriers(rawIns(imageBarriers));
+    m_CommandBuffer.cmdPipelineBarriers(imageBarriers);
 
     const vx::Range3D srcRegion(vx::toOffset3D(scissor.getOffset()),
                                 vx::toExtent3D(scissor.getExtent()));

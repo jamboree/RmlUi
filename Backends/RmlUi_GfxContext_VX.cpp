@@ -122,21 +122,6 @@ void GfxContext_VX::EndFrame() {
     const auto& presentResource = CurrentPresentResource();
     const auto commandBuffer = m_CommandBuffers[m_FrameIndex];
 
-    {
-        vx::ImageMemoryBarrierState imageMemoryBarrier;
-        imageMemoryBarrier.init(
-            presentResource.m_Image,
-            vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
-        imageMemoryBarrier.setOldLayout(vk::ImageLayout::eTransferDstOptimal);
-        imageMemoryBarrier.setSrcStageAccess(
-            vk::PipelineStageFlagBits2::bTransfer,
-            vk::AccessFlagBits2::bTransferWrite);
-        imageMemoryBarrier.setNewLayout(vk::ImageLayout::ePresentSrcKHR);
-        imageMemoryBarrier.setDstStageAccess(
-            vk::PipelineStageFlagBits2::bAllCommands,
-            vk::AccessFlagBits2::eNone);
-        commandBuffer.cmdPipelineBarriers(imageMemoryBarrier);
-    }
     check(commandBuffer.end());
 
     vk::CommandBufferSubmitInfo bufferSubmitInfo;

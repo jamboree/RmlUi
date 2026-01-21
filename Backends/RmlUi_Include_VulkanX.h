@@ -330,7 +330,54 @@ namespace vx {
         }
     };
 
-    struct ImageMemoryBarrierState : vk::ImageMemoryBarrier2 {
+    struct MemoryBarrier2 : vk::MemoryBarrier2 {
+        void setSrcStageAccess(vk::PipelineStageFlags2 stageMask,
+                               vk::AccessFlags2 accessMask) {
+            setSrcStageMask(stageMask);
+            setSrcAccessMask(accessMask);
+        }
+
+        void setDstStageAccess(vk::PipelineStageFlags2 stageMask,
+                               vk::AccessFlags2 accessMask) {
+            setDstStageMask(stageMask);
+            setDstAccessMask(accessMask);
+        }
+
+        void updateStageAccess(vk::PipelineStageFlags2 stageMask,
+                               vk::AccessFlags2 accessMask) {
+            setSrcStageAccess(getDstStageMask(), getDstAccessMask());
+            setDstStageAccess(stageMask, accessMask);
+        }
+    };
+
+    struct BufferMemoryBarrier2 : vk::BufferMemoryBarrier2 {
+        void init(const BufferOffset& buffer,
+                  vk::DeviceSize size = VK_WHOLE_SIZE) {
+            setBuffer(buffer.m_buffer);
+            setOffset(buffer.m_offset);
+            setSize(size);
+        }
+
+        void setSrcStageAccess(vk::PipelineStageFlags2 stageMask,
+                               vk::AccessFlags2 accessMask) {
+            setSrcStageMask(stageMask);
+            setSrcAccessMask(accessMask);
+        }
+
+        void setDstStageAccess(vk::PipelineStageFlags2 stageMask,
+                               vk::AccessFlags2 accessMask) {
+            setDstStageMask(stageMask);
+            setDstAccessMask(accessMask);
+        }
+
+        void updateStageAccess(vk::PipelineStageFlags2 stageMask,
+                               vk::AccessFlags2 accessMask) {
+            setSrcStageAccess(getDstStageMask(), getDstAccessMask());
+            setDstStageAccess(stageMask, accessMask);
+        }
+    };
+
+    struct ImageMemoryBarrier2 : vk::ImageMemoryBarrier2 {
         void init(vk::Image image,
                   const vk::ImageSubresourceRange& subresourceRange) {
             setImage(image);
@@ -369,29 +416,22 @@ namespace vx {
         }
     };
 
-    inline Ins<vk::ImageMemoryBarrier2>
-    rawIns(Ins<ImageMemoryBarrierState> ins) {
-        return {static_cast<const vk::ImageMemoryBarrier2*>(ins.data()),
-                ins.size()};
-    }
-
     struct DependencyInfoBuilder : vk::DependencyInfo {
-        std::type_identity<vk::MemoryBarrier2>
-        set(Ins<vk::MemoryBarrier2> ins) {
+        std::type_identity<MemoryBarrier2> set(Ins<MemoryBarrier2> ins) {
             setMemoryBarrierCount(uint32_t(ins.size()));
             setMemoryBarriers(ins.data());
             return {};
         }
 
-        std::type_identity<vk::BufferMemoryBarrier2>
-        set(Ins<vk::BufferMemoryBarrier2> ins) {
+        std::type_identity<BufferMemoryBarrier2>
+        set(Ins<BufferMemoryBarrier2> ins) {
             setBufferMemoryBarrierCount(uint32_t(ins.size()));
             setBufferMemoryBarriers(ins.data());
             return {};
         }
 
-        std::type_identity<vk::ImageMemoryBarrier2>
-        set(Ins<vk::ImageMemoryBarrier2> ins) {
+        std::type_identity<ImageMemoryBarrier2>
+        set(Ins<ImageMemoryBarrier2> ins) {
             setImageMemoryBarrierCount(uint32_t(ins.size()));
             setImageMemoryBarriers(ins.data());
             return {};
