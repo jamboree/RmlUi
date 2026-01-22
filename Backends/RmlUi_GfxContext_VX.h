@@ -15,7 +15,8 @@ struct GfxContext_VX {
     static constexpr const char* const RequiredDeviceExtensions[] = {
         VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME,
         VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME,
-        VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME};
+        VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME,
+        VK_KHR_MAINTENANCE_5_EXTENSION_NAME};
     static constexpr const char* const OptionalDeviceExtensions[] = {
         VK_EXT_HOST_IMAGE_COPY_EXTENSION_NAME};
 

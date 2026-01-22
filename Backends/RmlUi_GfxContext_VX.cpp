@@ -18,6 +18,7 @@ struct GfxContext_VX::DeviceFeatures
                          vk::PhysicalDeviceExtendedDynamicState3FeaturesEXT,
                          vk::PhysicalDeviceBufferDeviceAddressFeatures,
                          vk::PhysicalDeviceUniformBufferStandardLayoutFeatures,
+                         vk::PhysicalDeviceMaintenance5Features,
                          vk::PhysicalDeviceHostImageCopyFeaturesEXT> {
     bool Init(vk::PhysicalDevice physicalDevice) {
         DeviceFeatures supported;
@@ -32,6 +33,7 @@ struct GfxContext_VX::DeviceFeatures
         REQIRE_FEATURE(descriptorBindingStorageBufferUpdateAfterBind);
         REQIRE_FEATURE(descriptorBindingSampledImageUpdateAfterBind);
         REQIRE_FEATURE(uniformBufferStandardLayout);
+        REQIRE_FEATURE(maintenance5);
         OPTIONAL_FEATURE(hostImageCopy);
         return true;
     }

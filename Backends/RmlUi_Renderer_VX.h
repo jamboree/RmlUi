@@ -272,9 +272,9 @@ private:
 
     vk::Image BeginPostprocess(unsigned index, bool load = false);
 
-    void TransitionToSample(vk::Image image, bool fromTransfer);
+    void TransitionToShaderRead(vk::Image image, bool fromTransfer);
 
-    void SetPostprocessSample(unsigned index);
+    void SetShaderReadPostprocess(unsigned index);
 
     void ResolveLayer(Rml::LayerHandle source, vk::Image dstImage);
 

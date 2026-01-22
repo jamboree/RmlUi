@@ -234,12 +234,12 @@ struct Renderer_VX::UniformDescriptorSet {
 };
 
 struct Renderer_VX::LayerState {
-    enum State : uint8_t { None, Transfer, Attachment };
+    enum State : uint8_t { None, TransferSrc, Attachment };
     State m_State = None;
 
     void SetImageBarrierSrc(vx::ImageMemoryBarrier2& imageBarrier) const {
         switch (m_State) {
-        case Transfer:
+        case TransferSrc:
             imageBarrier.setOldLayout(vk::ImageLayout::eTransferSrcOptimal);
             imageBarrier.setSrcStageAccess(
                 vk::PipelineStageFlagBits2::bTransfer,
@@ -1095,7 +1095,7 @@ vk::Image Renderer_VX::BeginPostprocess(unsigned index, bool load) {
     return colorImage.m_Image;
 }
 
-void Renderer_VX::TransitionToSample(vk::Image image, bool fromTransfer) {
+void Renderer_VX::TransitionToShaderRead(vk::Image image, bool fromTransfer) {
     vx::ImageMemoryBarrier2 imageBarrier;
     imageBarrier.init(image,
                       vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
@@ -1116,7 +1116,7 @@ void Renderer_VX::TransitionToSample(vk::Image image, bool fromTransfer) {
     m_CommandBuffer.cmdPipelineBarriers(imageBarrier);
 }
 
-void Renderer_VX::SetPostprocessSample(unsigned index) {
+void Renderer_VX::SetShaderReadPostprocess(unsigned index) {
     m_CommandBuffer.cmdPushConstant(m_PrimaryPipelineLayout,
                                     vk::ShaderStageFlagBits::bFragment,
                                     VX_FIELD(FsInput, texIdx) = index);
@@ -1135,7 +1135,7 @@ void Renderer_VX::ResolveLayer(Rml::LayerHandle source, vk::Image dstImage) {
     srcImageBarrier.setNewLayout(vk::ImageLayout::eTransferSrcOptimal);
     srcImageBarrier.setDstStageAccess(vk::PipelineStageFlagBits2::bTransfer,
                                       vk::AccessFlagBits2::bTransferRead);
-    layerState.m_State = LayerState::Transfer;
+    layerState.m_State = LayerState::TransferSrc;
 
     dstImageBarrier.init(dstImage,
                          vx::subresourceRange(vk::ImageAspectFlagBits::bColor));
@@ -1235,7 +1235,7 @@ void Renderer_VX::CompositeLayers(
     const auto postprocessImage = GetPostprocess(m_PostprocessIndex).m_Image;
     ResolveLayer(source, postprocessImage);
 
-    TransitionToSample(postprocessImage, true);
+    TransitionToShaderRead(postprocessImage, true);
 
     // Render the filters, the Postprocess(0) framebuffer is used for both
     // input and output.
@@ -1243,7 +1243,7 @@ void Renderer_VX::CompositeLayers(
 
     BeginLayerRendering(destination);
     ActivateLayerRendering();
-    SetPostprocessSample(m_PostprocessIndex);
+    SetShaderReadPostprocess(m_PostprocessIndex);
 
     RenderPassthrough(m_Gfx->m_SampleCount == vk::SampleCountFlagBits::b1
                           ? m_PassthroughPipeline
@@ -1362,7 +1362,7 @@ Rml::CompiledFilterHandle Renderer_VX::SaveLayerAsMaskImage() {
     const auto maskImage = GetPostprocess(3).m_Image;
     ResolveLayer(topLayer, maskImage);
 
-    TransitionToSample(maskImage, true);
+    TransitionToShaderRead(maskImage, true);
 
     BeginLayerRendering(topLayer);
 
@@ -1590,7 +1590,10 @@ void Renderer_VX::InitPipelines(
     pipelineBuilder.setCullMode(vk::CullModeFlagBits::eNone);
     pipelineBuilder.setRasterizationSamples(m_Gfx->m_SampleCount);
 
-    vk::PipelineShaderStageCreateInfo shaderStageInfos[2];
+    vk::PipelineShaderStageCreateInfo shaderStageInfos[2] = {
+        vx::pipelineShaderStageCreateInfo(vk::ShaderStageFlagBits::bVertex, {}),
+        vx::pipelineShaderStageCreateInfo(vk::ShaderStageFlagBits::bFragment,
+                                          {})};
     pipelineBuilder.setStages(shaderStageInfos);
 
     vk::DynamicState dynamicStates[7];
@@ -1599,8 +1602,6 @@ void Renderer_VX::InitPipelines(
     vk::VertexInputAttributeDescription vertexAttributeDescriptions[3];
     pipelineBuilder.setVertexAttributeDescriptions(vertexAttributeDescriptions);
 
-    shaderStageInfos[0] = vx::makePipelineShaderStageCreateInfo(
-        vk::ShaderStageFlagBits::bVertex, {});
     pipelineBuilder.setStageCount(1);
 
     dynamicStates[0] = vk::DynamicState::eViewport;
@@ -1634,8 +1635,6 @@ void Renderer_VX::InitPipelines(
 
     m_ClipPipeline = pipelineBuilder.build(device).get();
 
-    shaderStageInfos[1] = vx::makePipelineShaderStageCreateInfo(
-        vk::ShaderStageFlagBits::bFragment, {});
     pipelineBuilder.setStageCount(2);
 
     dynamicStates[3] = vk::DynamicState::eStencilTestEnable;
@@ -1908,7 +1907,7 @@ void Renderer_VX::RenderFilters(
 
 void Renderer_VX::RenderFilter(const PassthroughFilter& filter) {
     const auto postprocesImage = BeginPostprocess(m_PostprocessIndex ^ 1);
-    SetPostprocessSample(m_PostprocessIndex);
+    SetShaderReadPostprocess(m_PostprocessIndex);
 
     m_CommandBuffer.cmdBindPipeline(vk::PipelineBindPoint::eGraphics,
                                     m_PassthroughPipeline);
@@ -1925,18 +1924,18 @@ void Renderer_VX::RenderFilter(const PassthroughFilter& filter) {
 
     m_GeometryResources.Get(~m_FullscreenQuadGeometry).Draw(m_CommandBuffer);
     m_CommandBuffer.cmdEndRendering();
-    TransitionToSample(postprocesImage, false);
+    TransitionToShaderRead(postprocesImage, false);
     m_PostprocessIndex ^= 1;
 }
 
 void Renderer_VX::RenderFilter(const BlurFilter& filter) {
     RenderBlur(filter.sigma, {m_PostprocessIndex, m_PostprocessIndex ^ 1});
-    TransitionToSample(GetPostprocess(m_PostprocessIndex).m_Image, true);
+    TransitionToShaderRead(GetPostprocess(m_PostprocessIndex).m_Image, true);
 }
 
 void Renderer_VX::RenderFilter(const DropShadowFilter& filter) {
     const auto postprocesImage = BeginPostprocess(m_PostprocessIndex ^ 1);
-    SetPostprocessSample(m_PostprocessIndex);
+    SetShaderReadPostprocess(m_PostprocessIndex);
 
     m_CommandBuffer.cmdBindPipeline(vk::PipelineBindPoint::eGraphics,
                                     m_DropShadowPipeline);
@@ -1959,18 +1958,18 @@ void Renderer_VX::RenderFilter(const DropShadowFilter& filter) {
         m_CommandBuffer.cmdEndRendering();
         RenderBlur(filter.sigma, {m_PostprocessIndex ^ 1, 2});
         BeginPostprocess(m_PostprocessIndex ^ 1, true);
-        SetPostprocessSample(m_PostprocessIndex);
+        SetShaderReadPostprocess(m_PostprocessIndex);
     }
 
     RenderPassthrough(m_PassthroughPipeline, true);
     m_CommandBuffer.cmdEndRendering();
-    TransitionToSample(postprocesImage, false);
+    TransitionToShaderRead(postprocesImage, false);
     m_PostprocessIndex ^= 1;
 }
 
 void Renderer_VX::RenderFilter(const ColorMatrixFilter& filter) {
     const auto postprocesImage = BeginPostprocess(m_PostprocessIndex ^ 1);
-    SetPostprocessSample(m_PostprocessIndex);
+    SetShaderReadPostprocess(m_PostprocessIndex);
 
     m_CommandBuffer.cmdBindPipeline(vk::PipelineBindPoint::eGraphics,
                                     m_ColorMatrixPipeline);
@@ -1981,20 +1980,20 @@ void Renderer_VX::RenderFilter(const ColorMatrixFilter& filter) {
 
     m_GeometryResources.Get(~m_FullscreenQuadGeometry).Draw(m_CommandBuffer);
     m_CommandBuffer.cmdEndRendering();
-    TransitionToSample(postprocesImage, false);
+    TransitionToShaderRead(postprocesImage, false);
     m_PostprocessIndex ^= 1;
 }
 
 void Renderer_VX::RenderFilter(const MaskImageFilter&) {
     const auto postprocesImage = BeginPostprocess(m_PostprocessIndex ^ 1);
-    SetPostprocessSample(m_PostprocessIndex);
+    SetShaderReadPostprocess(m_PostprocessIndex);
 
     m_CommandBuffer.cmdBindPipeline(vk::PipelineBindPoint::eGraphics,
                                     m_BlendMaskPipeline);
 
     m_GeometryResources.Get(~m_FullscreenQuadGeometry).Draw(m_CommandBuffer);
     m_CommandBuffer.cmdEndRendering();
-    TransitionToSample(postprocesImage, false);
+    TransitionToShaderRead(postprocesImage, false);
     m_PostprocessIndex ^= 1;
 }
 
@@ -2039,11 +2038,11 @@ void Renderer_VX::RenderBlur(float sigma, const unsigned (&postprocess)[2]) {
         scissor.extent.height /= 2;
         const auto j = i & 1;
         const auto postprocesImage = BeginPostprocess(postprocess[j ^ 1]);
-        SetPostprocessSample(postprocess[j]);
+        SetShaderReadPostprocess(postprocess[j]);
         m_CommandBuffer.cmdSetScissor(0, 1, &scissor);
         m_GeometryResources.Get(~m_BlurQuadGeometry).Draw(m_CommandBuffer);
         m_CommandBuffer.cmdEndRendering();
-        TransitionToSample(postprocesImage, false);
+        TransitionToShaderRead(postprocesImage, false);
     }
 
     SetViewport(m_CommandBuffer, extent.width, extent.height);
@@ -2052,11 +2051,11 @@ void Renderer_VX::RenderBlur(float sigma, const unsigned (&postprocess)[2]) {
     // downscaling, we might need to move it from the source_destination buffer.
     if ((pass_level & 1) == 0) {
         const auto postprocesImage = BeginPostprocess(postprocess[1]);
-        SetPostprocessSample(postprocess[0]);
+        SetShaderReadPostprocess(postprocess[0]);
         m_GeometryResources.Get(~m_FullscreenQuadGeometry)
             .Draw(m_CommandBuffer);
         m_CommandBuffer.cmdEndRendering();
-        TransitionToSample(postprocesImage, false);
+        TransitionToShaderRead(postprocesImage, false);
     }
 
     m_CommandBuffer.cmdBindPipeline(vk::PipelineBindPoint::eGraphics,
@@ -2073,18 +2072,18 @@ void Renderer_VX::RenderBlur(float sigma, const unsigned (&postprocess)[2]) {
 
     // Blur render pass - vertical.
     const auto postprocesImage0 = BeginPostprocess(postprocess[0]);
-    SetPostprocessSample(postprocess[1]);
+    SetShaderReadPostprocess(postprocess[1]);
 
     m_CommandBuffer.cmdPushConstant(
         m_PrimaryPipelineLayout, vk::ShaderStageFlagBits::bVertex,
         VX_FIELD(BlurVsInput, texelOffset) = {0.f, 1.f / extent.height});
     m_GeometryResources.Get(~m_FullscreenQuadGeometry).Draw(m_CommandBuffer);
     m_CommandBuffer.cmdEndRendering();
-    TransitionToSample(postprocesImage0, false);
+    TransitionToShaderRead(postprocesImage0, false);
 
     // Blur render pass - horizontal.
     const auto postprocesImage1 = BeginPostprocess(postprocess[1]);
-    SetPostprocessSample(postprocess[0]);
+    SetShaderReadPostprocess(postprocess[0]);
 
     m_CommandBuffer.cmdPushConstant(
         m_PrimaryPipelineLayout, vk::ShaderStageFlagBits::bVertex,

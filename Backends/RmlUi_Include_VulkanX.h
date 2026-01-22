@@ -221,9 +221,9 @@ namespace vx {
     }
 
     inline vk::PipelineShaderStageCreateInfo
-    makePipelineShaderStageCreateInfo(vk::ShaderStageFlagBits stage,
-                                      vk::ShaderModule shaderModule,
-                                      const char* name = "main") {
+    pipelineShaderStageCreateInfo(vk::ShaderStageFlagBits stage,
+                                  vk::ShaderModule shaderModule,
+                                  const char* name = "main") {
         vk::PipelineShaderStageCreateInfo shaderStageInfo;
         shaderStageInfo.setStage(stage);
         shaderStageInfo.setName(name);
@@ -232,11 +232,11 @@ namespace vx {
     }
 
     inline vk::ComputePipelineCreateInfo
-    makeComputePipelineCreateInfo(vk::PipelineLayout layout,
-                                  vk::ShaderModule shaderModule,
-                                  const char* name = "main") {
+    computePipelineCreateInfo(vk::PipelineLayout layout,
+                              vk::ShaderModule shaderModule,
+                              const char* name = "main") {
         vk::ComputePipelineCreateInfo pipelineInfo;
-        pipelineInfo.setStage(makePipelineShaderStageCreateInfo(
+        pipelineInfo.setStage(pipelineShaderStageCreateInfo(
             vk::ShaderStageFlagBits::bCompute, shaderModule, name));
         pipelineInfo.setLayout(layout);
         return pipelineInfo;
