@@ -101,11 +101,10 @@ bool GfxContext_VX::AcquireRenderTarget() {
                                                 acquireSemaphore);
         ret.result == vk::Result::eErrorOutOfDateKHR) [[unlikely]] {
         return false;
+    } else if (ret.result == vk::Result::eSuboptimalKHR) {
+        m_RenderTargetOutdated = true;
+        m_PresentIndex = ret.value;
     } else {
-        if (ret.result == vk::Result::eSuboptimalKHR) [[unlikely]] {
-            ret.result = vk::Result::eSuccess;
-            m_RenderTargetOutdated = true;
-        }
         m_PresentIndex = ret.get();
     }
     return true;
