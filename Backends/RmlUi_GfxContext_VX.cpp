@@ -246,7 +246,7 @@ void GfxContext_VX::InitRenderTarget(vk::Extent2D extent) {
         vk::ImageAspectFlagBits::bDepth | vk::ImageAspectFlagBits::bStencil,
         m_SampleCount);
     BuildPresentResources();
-    m_FrameIndex = InFlightCount - 1;
+    m_FrameIndex = 0;
     m_RenderTargetOutdated = false;
 }
 

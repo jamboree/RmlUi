@@ -62,7 +62,6 @@ struct BackendContext {
 
         UpdateFramebufferSize();
         m_Gfx.m_SampleCount = vk::SampleCountFlagBits(RMLUI_NUM_MSAA_SAMPLES);
-        m_Gfx.InitRenderTarget(m_FrameExtent);
 
         if (!m_Renderer.Init(m_Gfx)) {
             Rml::Log::Message(Rml::Log::LT_ERROR,
@@ -122,10 +121,6 @@ struct BackendContext {
             }
             UpdateFramebufferSize();
             if (m_FrameExtent.width) {
-                if (m_Gfx.m_RenderTargetOutdated) {
-                    m_Gfx.RecreateRenderTarget(m_FrameExtent);
-                    m_Renderer.ResetRenderTarget();
-                }
                 break;
             }
             glfwWaitEvents();
@@ -249,8 +244,13 @@ struct BackendContext {
     }
 
     void BeginFrame() {
-        m_Gfx.WaitNextFrame();
-        m_Renderer.ResetFrame(m_Gfx.m_FrameIndex);
+        if (m_Gfx.m_RenderTargetOutdated) {
+            m_Gfx.RecreateRenderTarget(m_FrameExtent);
+            m_Renderer.ResetRenderTarget();
+        } else {
+            m_Gfx.WaitNextFrame();
+            m_Renderer.ResetFrame(m_Gfx.m_FrameIndex);
+        }
         if (!m_Gfx.AcquireRenderTarget()) {
             m_Gfx.RecreateRenderTarget(m_FrameExtent);
             m_Renderer.ResetRenderTarget();

@@ -351,16 +351,7 @@ bool Renderer_VX::Init(GfxContext_VX& gfx) {
 void Renderer_VX::Destroy() {
     const auto device = m_Gfx->m_Device;
 
-    ReleaseAllResourceUse((2u << GfxContext_VX::InFlightCount) - 2u);
-    for (auto& frameResource :
-         std::span(m_FrameResources.get(), GfxContext_VX::InFlightCount)) {
-        ResetFrameResource(frameResource);
-    }
-
-    m_LayerManager.Destroy(*m_Gfx);
-    for (auto& image : m_Postprocess) {
-        m_Gfx->DestroyImageAttachment(image);
-    }
+    ResetRenderTarget();
 
     if (m_FullscreenQuadGeometry) {
         ReleaseGeometry(m_FullscreenQuadGeometry);
@@ -517,6 +508,12 @@ void Renderer_VX::ResetFrame(unsigned frameNumber) {
 }
 
 void Renderer_VX::ResetRenderTarget() {
+    ReleaseAllResourceUse((2u << GfxContext_VX::InFlightCount) - 2u);
+    for (auto& frameResource :
+        std::span(m_FrameResources.get(), GfxContext_VX::InFlightCount)) {
+        ResetFrameResource(frameResource);
+    }
+
     m_LayerManager.Destroy(*m_Gfx);
     m_LayerManager.m_layers_capacity = 0;
     for (auto& image : m_Postprocess) {

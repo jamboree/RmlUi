@@ -55,7 +55,7 @@ struct GfxContext_VX {
     uint32_t m_PresentIndex = 0;
     uint32_t m_QueueFamilyIndex = 0;
     bool m_HasHostImageCopy = false;
-    bool m_RenderTargetOutdated = false;
+    bool m_RenderTargetOutdated = true;
 
     void DestroyRenderResources();
 
